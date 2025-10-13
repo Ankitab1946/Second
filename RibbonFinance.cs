@@ -9,8 +9,15 @@ using Newtonsoft.Json;
 
 namespace ExcelFinanceAddIn
 {
-    public partial class RibbonFinance
+    public partial class RibbonFinance : RibbonBase
     {
+        // Required constructor calling base(factory)
+        public RibbonFinance()
+            : base(Globals.Factory.GetRibbonFactory())
+        {
+            InitializeComponent();
+        }
+
         // Store API1 response
         public List<Counterparty> CounterpartyList { get; set; } = new List<Counterparty>();
 
@@ -25,12 +32,16 @@ namespace ExcelFinanceAddIn
                     resp.EnsureSuccessStatusCode();
                     string json = await resp.Content.ReadAsStringAsync();
 
-                    var cpList = JsonConvert.DeserializeObject<List<Counterparty>>(json);
+                    var cpList = JsonConvert.DeserializeObject<List<Counterparty>>(json) ?? new List<Counterparty>();
                     var top5 = cpList.Count > 5 ? cpList.GetRange(0, 5) : cpList;
 
                     ddlCounterparty.Items.Clear();
                     foreach (var cp in top5)
-                        ddlCounterparty.Items.Add(cp.CID);
+                    {
+                        var item = Factory.CreateRibbonDropDownItem();
+                        item.Label = cp.CID;
+                        ddlCounterparty.Items.Add(item);
+                    }
 
                     CounterpartyList = top5;
                 }
@@ -45,7 +56,9 @@ namespace ExcelFinanceAddIn
         {
             try
             {
-                var selectedCID = ddlCounterparty.SelectedItem.Label;
+                var selected = ddlCounterparty.SelectedItem;
+                if (selected == null) return;
+                var selectedCID = selected.Label;
                 var cp = CounterpartyList.Find(c => c.CID == selectedCID);
 
                 if (cp != null)
@@ -64,7 +77,9 @@ namespace ExcelFinanceAddIn
         {
             try
             {
-                var selectedCID = ddlCounterparty.SelectedItem.Label;
+                var sel = ddlCounterparty.SelectedItem;
+                if (sel == null) { MessageBox.Show("Please select a counterparty."); return; }
+                var selectedCID = sel.Label;
                 var payload = new { CID = selectedCID };
 
                 using (var client = new HttpClient())
@@ -78,24 +93,42 @@ namespace ExcelFinanceAddIn
 
                     dynamic api2Resp = JsonConvert.DeserializeObject(json);
 
-                    // Populate dropdowns
+                    // Populate dropdowns (clear then add items via Factory)
                     ddlCurrency.Items.Clear();
-                    ddlCurrency.Items.Add(api2Resp.Currency.ToString());
+                    var currencyItem = Factory.CreateRibbonDropDownItem();
+                    currencyItem.Label = api2Resp.Currency.ToString();
+                    ddlCurrency.Items.Add(currencyItem);
                     ddlCurrency.SelectedItemIndex = 0;
 
                     ddlPeriod.Items.Clear();
                     foreach (var p in api2Resp.Period)
-                        ddlPeriod.Items.Add(p.ToString());
+                    {
+                        var it = Factory.CreateRibbonDropDownItem();
+                        it.Label = p.ToString();
+                        ddlPeriod.Items.Add(it);
+                    }
                     ddlPeriod.SelectedItemIndex = 0;
 
                     ddlBasis.Items.Clear();
+                    int basisIndex = 0;
                     foreach (var b in api2Resp.Basis)
-                        ddlBasis.Items.Add(b.ToString());
-                    ddlBasis.SelectedItemIndex = 1; // default text2
+                    {
+                        var it = Factory.CreateRibbonDropDownItem();
+                        it.Label = b.ToString();
+                        ddlBasis.Items.Add(it);
+                        // default to "text2" if present
+                        if (b.ToString().Equals("text2", StringComparison.OrdinalIgnoreCase))
+                            ddlBasis.SelectedItemIndex = basisIndex;
+                        basisIndex++;
+                    }
 
                     ddlType.Items.Clear();
                     foreach (var t in api2Resp.Type)
-                        ddlType.Items.Add(t.ToString());
+                    {
+                        var it = Factory.CreateRibbonDropDownItem();
+                        it.Label = t.ToString();
+                        ddlType.Items.Add(it);
+                    }
                     ddlType.SelectedItemIndex = 0;
 
                     txtFromYear.Text = api2Resp.FromYear.ToString();
@@ -112,14 +145,17 @@ namespace ExcelFinanceAddIn
         {
             try
             {
+                var sel = ddlCounterparty.SelectedItem;
+                if (sel == null) { MessageBox.Show("Please select a counterparty."); return; }
+
                 var payload = new
                 {
-                    CID = ddlCounterparty.SelectedItem.Label,
+                    CID = sel.Label,
                     FromYear = int.Parse(txtFromYear.Text),
                     toYear = int.Parse(txtToYear.Text),
-                    Period = ddlPeriod.SelectedItem.Label,
-                    Basis = ddlBasis.SelectedItem.Label,
-                    Type = ddlType.SelectedItem.Label,
+                    Period = ddlPeriod.SelectedItem?.Label,
+                    Basis = ddlBasis.SelectedItem?.Label,
+                    Type = ddlType.SelectedItem?.Label,
                 };
 
                 using (var client = new HttpClient())
@@ -132,7 +168,18 @@ namespace ExcelFinanceAddIn
                     resp.EnsureSuccessStatusCode();
                     string json = await resp.Content.ReadAsStringAsync();
 
-                    DataTable dt = JsonConvert.DeserializeObject<DataTable>(json);
+                    // If API returns array of objects, convert to DataTable and write to Excel
+                    DataTable dt;
+                    try
+                    {
+                        dt = JsonConvert.DeserializeObject<DataTable>(json);
+                    }
+                    catch
+                    {
+                        // fallback: wrap single object into an array and try again
+                        dt = JsonConvert.DeserializeObject<DataTable>("[" + json + "]");
+                    }
+
                     Utils.ExcelWriter.WriteToExcel(dt, "Final Data");
                 }
             }
