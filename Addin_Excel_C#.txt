@@ -1,0 +1,435 @@
+// -----------------------------------------------------------------------------
+// Project: ExcelFinanceAddIn
+// Target: .NET Framework 4.8 (VSTO Excel Add-in)
+// This single file contains the complete Visual Studio project structure and
+// all source files concatenated with path separators. Copy each file into
+// the corresponding path inside a new Visual Studio VSTO Add-in project.
+// -----------------------------------------------------------------------------
+
+==== ExcelFinanceAddIn.sln ====
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.29905.134
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExcelFinanceAddIn", "ExcelFinanceAddIn\ExcelFinanceAddIn.csproj", "{D1A1E2F0-1234-4B2A-9A1B-8C9D0E1F2A3B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D1A1E2F0-1234-4B2A-9A1B-8C9D0E1F2A3B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D1A1E2F0-1234-4B2A-9A1B-8C9D0E1F2A3B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D1A1E2F0-1234-4B2A-9A1B-8C9D0E1F2A3B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D1A1E2F0-1234-4B2A-9A1B-8C9D0E1F2A3B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
+
+==== ExcelFinanceAddIn\ExcelFinanceAddIn.csproj ====
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ExcelFinanceAddIn</RootNamespace>
+    <AssemblyName>ExcelFinanceAddIn</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.Office.Interop.Excel" />
+    <Reference Include="Office">
+      <HintPath>$(ProgramFiles)\Microsoft Office\root\Office16\ADDINS\Office.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Vbe.Interop" />
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ThisAddIn.cs" />
+    <Compile Include="RibbonFinance.cs" />
+    <Compile Include="RibbonFinance.Designer.cs" />
+    <Compile Include="Data\SnowflakeHelper.cs" />
+    <Compile Include="Data\SqlServerHelper.cs" />
+    <Compile Include="Data\ApiHelper.cs" />
+    <Compile Include="Utils\ExcelWriter.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- Snowflake.Data will be added manually for compatibility (see README) -->
+  </ItemGroup>
+</Project>
+
+==== ExcelFinanceAddIn\App.config ====
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <startup> 
+    <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8" />
+  </startup>
+</configuration>
+
+==== ExcelFinanceAddIn\ThisAddIn.cs ====
+using System;
+using Microsoft.Office.Tools.Excel;
+
+namespace ExcelFinanceAddIn
+{
+    public partial class ThisAddIn
+    {
+        private void ThisAddIn_Startup(object sender, EventArgs e)
+        {
+        }
+
+        private void ThisAddIn_Shutdown(object sender, EventArgs e)
+        {
+        }
+
+        #region VSTO generated code
+        private void InternalStartup()
+        {
+            this.Startup += new System.EventHandler(ThisAddIn_Startup);
+            this.Shutdown += new System.EventHandler(ThisAddIn_Shutdown);
+        }
+        #endregion
+    }
+}
+
+==== ExcelFinanceAddIn\RibbonFinance.cs ====
+using System;
+using System.Threading.Tasks;
+using Microsoft.Office.Tools.Ribbon;
+using System.Windows.Forms;
+using System.Data;
+
+namespace ExcelFinanceAddIn
+{
+    public partial class RibbonFinance
+    {
+        private void RibbonFinance_Load(object sender, RibbonUIEventArgs e)
+        {
+        }
+
+        private void btnSnowflake_Click(object sender, RibbonControlEventArgs e)
+        {
+            try
+            {
+                var dt = Data.SnowflakeHelper.GetBalanceSheet();
+                Utils.ExcelWriter.WriteToExcel(dt, "Snowflake Balance Sheet");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Snowflake Error: {ex.Message}");
+            }
+        }
+
+        private async void btnApi_Click(object sender, RibbonControlEventArgs e)
+        {
+            try
+            {
+                var dt = await Data.ApiHelper.GetBalanceSheetFromApiAsync();
+                Utils.ExcelWriter.WriteToExcel(dt, "API Balance Sheet");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"API Error: {ex.Message}");
+            }
+        }
+
+        private void btnSqlServer_Click(object sender, RibbonControlEventArgs e)
+        {
+            try
+            {
+                var dt = Data.SqlServerHelper.GetBalanceSheet();
+                Utils.ExcelWriter.WriteToExcel(dt, "SQL Server Balance Sheet");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"SQL Error: {ex.Message}");
+            }
+        }
+    }
+}
+
+==== ExcelFinanceAddIn\RibbonFinance.Designer.cs ====
+namespace ExcelFinanceAddIn
+{
+    partial class RibbonFinance : Microsoft.Office.Tools.Ribbon.RibbonBase
+    {
+        private System.ComponentModel.IContainer components = null;
+        public RibbonFinance() : base(Globals.Factory.GetRibbonFactory()) => InitializeComponent();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && components != null) components.Dispose();
+            base.Dispose(disposing);
+        }
+
+        #region Component Designer generated code
+        private void InitializeComponent()
+        {
+            this.tabFinance = this.Factory.CreateRibbonTab();
+            this.groupDataFetch = this.Factory.CreateRibbonGroup();
+            this.btnSnowflake = this.Factory.CreateRibbonButton();
+            this.btnApi = this.Factory.CreateRibbonButton();
+            this.btnSqlServer = this.Factory.CreateRibbonButton();
+            this.tabFinance.SuspendLayout();
+            this.groupDataFetch.SuspendLayout();
+            this.SuspendLayout();
+
+            this.tabFinance.Label = "Finance Tools";
+            this.tabFinance.Groups.Add(this.groupDataFetch);
+
+            this.groupDataFetch.Label = "Data Fetch";
+            this.groupDataFetch.Items.Add(this.btnSnowflake);
+            this.groupDataFetch.Items.Add(this.btnApi);
+            this.groupDataFetch.Items.Add(this.btnSqlServer);
+
+            this.btnSnowflake.Label = "Fetch from Snowflake";
+            this.btnSnowflake.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnSnowflake_Click);
+
+            this.btnApi.Label = "Fetch from API";
+            this.btnApi.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnApi_Click);
+
+            this.btnSqlServer.Label = "Fetch from SQL Server";
+            this.btnSqlServer.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnSqlServer_Click);
+
+            this.Name = "RibbonFinance";
+            this.RibbonType = "Microsoft.Excel.Workbook";
+            this.Tabs.Add(this.tabFinance);
+            this.Load += new Microsoft.Office.Tools.Ribbon.RibbonUIEventHandler(this.RibbonFinance_Load);
+
+            this.tabFinance.ResumeLayout(false);
+            this.groupDataFetch.ResumeLayout(false);
+            this.ResumeLayout(false);
+        }
+        #endregion
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonTab tabFinance;
+        internal Microsoft.Office.Tools.Ribbon.RibbonGroup groupDataFetch;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnSnowflake;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnApi;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnSqlServer;
+    }
+}
+
+==== ExcelFinanceAddIn\Data\SnowflakeHelper.cs ====
+using System;
+using System.Data;
+// If you use Snowflake.Data from NuGet (v2.2.0), include this namespace
+// using Snowflake.Data.Client;
+using System.Data.Odbc;
+
+namespace ExcelFinanceAddIn.Data
+{
+    public static class SnowflakeHelper
+    {
+        // Two implementations are provided. By default we use ODBC to avoid NuGet issues.
+
+        public static DataTable GetBalanceSheet()
+        {
+            // Recommended: Use ODBC DSN (configure on all user machines)
+            string dsn = "SnowflakeDSN"; // <- change to your DSN
+            string connStr = $"DSN={dsn};UID=YOUR_USER;PWD=YOUR_PASS;";
+
+            using (var conn = new OdbcConnection(connStr))
+            {
+                conn.Open();
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT Year, Account, Amount FROM BALANCE_SHEET ORDER BY Year DESC";
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        var dt = new DataTable();
+                        dt.Load(reader);
+                        return dt;
+                    }
+                }
+            }
+        }
+
+        // If you want to use Snowflake.Data ADO.NET driver (v2.2.0) instead of ODBC,
+        // replace the ODBC code above with the following and add the Snowflake.Data.dll
+        // to the project references (manual copy). Uncomment the using Snowflake.Data.Client;
+        /*
+        public static DataTable GetBalanceSheet()
+        {
+            string connStr = "account=YOUR_ACCOUNT;user=YOUR_USER;password=YOUR_PASS;db=YOUR_DB;schema=PUBLIC;warehouse=COMPUTE_WH;";
+            using (var conn = new SnowflakeDbConnection())
+            {
+                conn.ConnectionString = connStr;
+                conn.Open();
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT Year, Account, Amount FROM BALANCE_SHEET ORDER BY Year DESC";
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        DataTable dt = new DataTable();
+                        dt.Load(reader);
+                        return dt;
+                    }
+                }
+            }
+        }
+        */
+    }
+}
+
+==== ExcelFinanceAddIn\Data\SqlServerHelper.cs ====
+using System.Data;
+using System.Data.SqlClient;
+
+namespace ExcelFinanceAddIn.Data
+{
+    public static class SqlServerHelper
+    {
+        public static DataTable GetBalanceSheet()
+        {
+            string connStr = "Server=YOUR_SERVER;Database=FinanceDB;Integrated Security=True;";
+            using (var conn = new SqlConnection(connStr))
+            {
+                conn.Open();
+                var query = "SELECT Year, Account, Amount FROM dbo.BalanceSheet ORDER BY Year DESC";
+                using (var da = new SqlDataAdapter(query, conn))
+                {
+                    var dt = new DataTable();
+                    da.Fill(dt);
+                    return dt;
+                }
+            }
+        }
+    }
+}
+
+==== ExcelFinanceAddIn\Data\ApiHelper.cs ====
+using System.Data;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+
+namespace ExcelFinanceAddIn.Data
+{
+    public static class ApiHelper
+    {
+        public static async Task<DataTable> GetBalanceSheetFromApiAsync()
+        {
+            using (var client = new HttpClient())
+            {
+                client.BaseAddress = new System.Uri("https://api.yourcompany.com/");
+                var resp = await client.GetAsync("balancesheet");
+                resp.EnsureSuccessStatusCode();
+                string json = await resp.Content.ReadAsStringAsync();
+                var dt = JsonConvert.DeserializeObject<DataTable>(json);
+                return dt;
+            }
+        }
+    }
+}
+
+==== ExcelFinanceAddIn\Utils\ExcelWriter.cs ====
+using System.Data;
+using Excel = Microsoft.Office.Interop.Excel;
+
+namespace ExcelFinanceAddIn.Utils
+{
+    public static class ExcelWriter
+    {
+        public static void WriteToExcel(DataTable data, string sheetName)
+        {
+            var xlApp = Globals.ThisAddIn.Application as Excel.Application;
+            Excel.Worksheet ws = null;
+
+            try
+            {
+                // Try to find existing sheet
+                foreach (Excel.Worksheet s in xlApp.Worksheets)
+                {
+                    if (s.Name == sheetName) { ws = s; break; }
+                }
+            }
+            catch { }
+
+            if (ws == null)
+            {
+                ws = xlApp.Worksheets.Add();
+                ws.Name = sheetName;
+            }
+
+            // Clear sheet
+            ws.Cells.Clear();
+
+            // Write headers
+            for (int c = 0; c < data.Columns.Count; c++)
+            {
+                ws.Cells[1, c + 1] = data.Columns[c].ColumnName;
+            }
+
+            // Write rows
+            for (int r = 0; r < data.Rows.Count; r++)
+            {
+                for (int c = 0; c < data.Columns.Count; c++)
+                {
+                    ws.Cells[r + 2, c + 1] = data.Rows[r][c];
+                }
+            }
+
+            // Format header
+            Excel.Range header = ws.Range[ws.Cells[1, 1], ws.Cells[1, data.Columns.Count]];
+            header.Font.Bold = true;
+            header.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.FromArgb(198, 239, 206));
+
+            // Auto fit
+            ws.Columns.AutoFit();
+
+            // Freeze header
+            xlApp.ActiveWindow.SplitRow = 1;
+            xlApp.ActiveWindow.FreezePanes = true;
+        }
+    }
+}
+
+==== README.md ====
+# ExcelFinanceAddIn (NET 4.8) - Project Files
+
+This repository contains a Visual Studio VSTO Excel Add-in project (source code only) compatible with **.NET Framework 4.8**.
+
+## What is included
+- Ribbon with three buttons: Fetch from Snowflake, Fetch from API, Fetch from SQL Server
+- Snowflake connectivity implemented using **ODBC by default** (recommended for enterprise)
+- Alternate Snowflake code commented for **Snowflake.Data ADO.NET** driver (if you manually add Snowflake.Data.dll v2.2.0)
+- API fetch using `HttpClient` and `Newtonsoft.Json`
+- SQL Server (Windows Authentication) using `System.Data.SqlClient`
+- Excel writing and basic balance-sheet style formatting
+
+## How to use
+1. Create a new VSTO Excel Add-in project in Visual Studio targeting **.NET Framework 4.8**.
+2. Copy the files from this project into your project folders.
+3. Install NuGet packages:
+   - Newtonsoft.Json (v13+)
+   - (Optional) AWSSDK.S3 if you choose to install Snowflake.Data with dependencies.
+
+## Using Snowflake
+### Recommended (ODBC)
+1. Install Snowflake ODBC driver from Snowflake website.
+2. Configure a System DSN named `SnowflakeDSN` (or change DSN in code).
+3. The project uses ODBC by default so no additional DLLs are required.
+
+### Alternate (Snowflake.Data v2.2.0)
+If you prefer to use Snowflake.Data ADO.NET driver:
+1. Download `Snowflake.Data` NuGet package (v2.2.0) from nuget.org as a .nupkg file.
+2. Extract `Snowflake.Data.dll` from the package (lib/net45 or lib/net46 folder).
+3. Add reference to the DLL in your project (Project -> Add Reference -> Browse).
+4. Uncomment the Snowflake.Data code in `Data/SnowflakeHelper.cs` and remove or comment ODBC code.
+
+## Build & Publish
+- Build the project in Visual Studio.
+- Publish using ClickOnce (recommended) or create an MSI using a Setup project / WiX.
+
+## Notes
+- Ensure all machines that will use the add-in have the Snowflake ODBC DSN configured if you use ODBC.
+- For Snowflake.Data v2.x manual installation, you may need to add AWSSDK.S3 to resolve some runtime features. If you don't need staging to S3, installing Snowflake.Data.dll alone typically suffices for queries.
+
+----
+
+// End of project file concatenation
