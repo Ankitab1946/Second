@@ -1,128 +1,174 @@
 namespace ExcelFinanceAddIn
 {
-    partial class RibbonFinance
+    partial class RibbonFinance : Microsoft.Office.Tools.Ribbon.RibbonBase
     {
         private System.ComponentModel.IContainer components = null;
 
-        internal Microsoft.Office.Tools.Ribbon.RibbonTab tabFinance;
-        internal Microsoft.Office.Tools.Ribbon.RibbonGroup grpDataFetch;
-        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnFetchAPI;
-        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown ddlCounterparty;
-        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnSubmitCounterparty;
-
-        internal Microsoft.Office.Tools.Ribbon.RibbonGroup grpParameters;
-        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown ddlCurrency;
-        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown ddlPeriod;
-        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown ddlBasis;
-        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown ddlType;
-        internal Microsoft.Office.Tools.Ribbon.RibbonEditBox txtFromYear;
-        internal Microsoft.Office.Tools.Ribbon.RibbonEditBox txtToYear;
-
-        internal Microsoft.Office.Tools.Ribbon.RibbonGroup grpOutput;
-        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnFetchFinalData;
+        public RibbonFinance()
+            : base(Globals.Factory.GetRibbonFactory())
+        {
+            InitializeComponent();
+        }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && (components != null))
-                components.Dispose();
+            if (disposing && (components != null)) components.Dispose();
             base.Dispose(disposing);
         }
+
+        #region Component Designer generated code
 
         private void InitializeComponent()
         {
             this.tabFinance = this.Factory.CreateRibbonTab();
-            this.grpDataFetch = this.Factory.CreateRibbonGroup();
-            this.btnFetchAPI = this.Factory.CreateRibbonButton();
-            this.ddlCounterparty = this.Factory.CreateRibbonDropDown();
+            this.groupAPI = this.Factory.CreateRibbonGroup();
+
+            this.btnFetchCounterparties = this.Factory.CreateRibbonButton();
+            this.drpCounterparties = this.Factory.CreateRibbonDropDown();
             this.btnSubmitCounterparty = this.Factory.CreateRibbonButton();
 
-            this.grpParameters = this.Factory.CreateRibbonGroup();
-            this.ddlCurrency = this.Factory.CreateRibbonDropDown();
-            this.ddlPeriod = this.Factory.CreateRibbonDropDown();
-            this.ddlBasis = this.Factory.CreateRibbonDropDown();
-            this.ddlType = this.Factory.CreateRibbonDropDown();
-            this.txtFromYear = this.Factory.CreateRibbonEditBox();
-            this.txtToYear = this.Factory.CreateRibbonEditBox();
+            this.drpCurrency = this.Factory.CreateRibbonDropDown();
+            this.drpPeriod = this.Factory.CreateRibbonDropDown();
+            this.drpBasis = this.Factory.CreateRibbonDropDown();
+            this.drpType = this.Factory.CreateRibbonDropDown();
 
-            this.grpOutput = this.Factory.CreateRibbonGroup();
-            this.btnFetchFinalData = this.Factory.CreateRibbonButton();
+            this.numFromYear = this.Factory.CreateRibbonEditBox();
+            this.numToYear = this.Factory.CreateRibbonEditBox();
 
-            this.tabFinance.SuspendLayout();
-            this.grpDataFetch.SuspendLayout();
-            this.grpParameters.SuspendLayout();
-            this.grpOutput.SuspendLayout();
-            this.SuspendLayout();
+            this.btnShowBalanceSheet = this.Factory.CreateRibbonButton();
 
-            // === Tab ===
+            // 
+            // tabFinance
+            // 
             this.tabFinance.Label = "Finance Tools";
-            this.tabFinance.Groups.Add(this.grpDataFetch);
-            this.tabFinance.Groups.Add(this.grpParameters);
-            this.tabFinance.Groups.Add(this.grpOutput);
+            this.tabFinance.Name = "tabFinance";
+            this.tabFinance.Groups.Add(this.groupAPI);
 
-            // === Group: Data Fetch ===
-            this.grpDataFetch.Label = "Data Retrieval";
-            this.grpDataFetch.Items.Add(this.btnFetchAPI);
-            this.grpDataFetch.Items.Add(this.ddlCounterparty);
-            this.grpDataFetch.Items.Add(this.btnSubmitCounterparty);
+            // 
+            // groupAPI
+            // 
+            this.groupAPI.Label = "API Workflow";
+            this.groupAPI.Name = "groupAPI";
 
-            this.btnFetchAPI.Label = "Fetch from API";
-            this.btnFetchAPI.ShowImage = true;
-            this.btnFetchAPI.Image = Properties.Resources.cloud_download_32;  // Add icon in Resources
-            this.btnFetchAPI.ScreenTip = "Fetch Counterparty list from API";
-            this.btnFetchAPI.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnFetchAPI_Click);
+            this.groupAPI.Items.Add(this.btnFetchCounterparties);
+            this.groupAPI.Items.Add(this.drpCounterparties);
+            this.groupAPI.Items.Add(this.btnSubmitCounterparty);
 
-            this.ddlCounterparty.Label = "Counterparty";
-            var placeholder = this.Factory.CreateRibbonDropDownItem();
-            placeholder.Label = "Select Counterparty...";
-            this.ddlCounterparty.Items.Add(placeholder);
-            this.ddlCounterparty.SelectedItemIndex = 0;
-            this.ddlCounterparty.SelectionChanged += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.ddlCounterparty_SelectionChanged);
+            this.groupAPI.Items.Add(this.drpCurrency);
+            this.groupAPI.Items.Add(this.drpPeriod);
+            this.groupAPI.Items.Add(this.drpBasis);
+            this.groupAPI.Items.Add(this.drpType);
 
-            this.btnSubmitCounterparty.Label = "Submit";
-            this.btnSubmitCounterparty.ShowImage = true;
-            this.btnSubmitCounterparty.Image = Properties.Resources.send_32;
-            this.btnSubmitCounterparty.ScreenTip = "Submit selected Counterparty";
+            this.groupAPI.Items.Add(this.numFromYear);
+            this.groupAPI.Items.Add(this.numToYear);
+
+            this.groupAPI.Items.Add(this.btnShowBalanceSheet);
+
+            // 
+            // btnFetchCounterparties
+            // 
+            this.btnFetchCounterparties.Label = "Fetch from API";
+            this.btnFetchCounterparties.Name = "btnFetchCounterparties";
+            this.btnFetchCounterparties.ScreenTip = "Fetch Counterparties";
+            this.btnFetchCounterparties.SuperTip = "Retrieve Counterparty List from API";
+            this.btnFetchCounterparties.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnFetchCounterparties_Click);
+
+            // 
+            // drpCounterparties
+            // 
+            this.drpCounterparties.Label = "Counterparty";
+            this.drpCounterparties.Name = "drpCounterparties";
+
+            // 
+            // btnSubmitCounterparty
+            // 
+            this.btnSubmitCounterparty.Label = "Submit Counterparty";
+            this.btnSubmitCounterparty.Name = "btnSubmitCounterparty";
+            this.btnSubmitCounterparty.ScreenTip = "Submit Counterparty Selection";
+            this.btnSubmitCounterparty.SuperTip = "Submit and fetch Counterparty details";
             this.btnSubmitCounterparty.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnSubmitCounterparty_Click);
 
-            // === Group: Parameters ===
-            this.grpParameters.Label = "API Parameters";
-            this.grpParameters.Items.Add(this.ddlCurrency);
-            this.grpParameters.Items.Add(this.ddlPeriod);
-            this.grpParameters.Items.Add(this.ddlBasis);
-            this.grpParameters.Items.Add(this.ddlType);
-            this.grpParameters.Items.Add(this.txtFromYear);
-            this.grpParameters.Items.Add(this.txtToYear);
+            // 
+            // drpCurrency
+            // 
+            this.drpCurrency.Label = "Currency";
+            this.drpCurrency.Name = "drpCurrency";
 
-            this.ddlCurrency.Label = "Currency";
-            this.ddlPeriod.Label = "Period";
-            this.ddlBasis.Label = "Basis";
-            this.ddlType.Label = "Type";
+            // 
+            // drpPeriod
+            // 
+            this.drpPeriod.Label = "Period";
+            this.drpPeriod.Name = "drpPeriod";
 
-            this.txtFromYear.Label = "From Year";
-            this.txtFromYear.Text = "2007";
-            this.txtToYear.Label = "To Year";
-            this.txtToYear.Text = "2008";
+            // 
+            // drpBasis
+            // 
+            this.drpBasis.Label = "Basis";
+            this.drpBasis.Name = "drpBasis";
 
-            // === Group: Output ===
-            this.grpOutput.Label = "Excel Output";
-            this.grpOutput.Items.Add(this.btnFetchFinalData);
+            // 
+            // drpType
+            // 
+            this.drpType.Label = "Type";
+            this.drpType.Name = "drpType";
 
-            this.btnFetchFinalData.Label = "Fetch Final Data";
-            this.btnFetchFinalData.ShowImage = true;
-            this.btnFetchFinalData.Image = Properties.Resources.table_32;
-            this.btnFetchFinalData.ScreenTip = "Fetch Final Balance Sheet and display in Excel";
-            this.btnFetchFinalData.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnFetchFinalData_Click);
+            // 
+            // numFromYear
+            // 
+            this.numFromYear.Label = "From Year";
+            this.numFromYear.Name = "numFromYear";
+            this.numFromYear.Text = "2007";
 
-            // === Add to Tab ===
+            // 
+            // numToYear
+            // 
+            this.numToYear.Label = "To Year";
+            this.numToYear.Name = "numToYear";
+            this.numToYear.Text = "2008";
+
+            // 
+            // btnShowBalanceSheet
+            // 
+            this.btnShowBalanceSheet.Label = "Fetch Final Data";
+            this.btnShowBalanceSheet.Name = "btnShowBalanceSheet";
+            this.btnShowBalanceSheet.ScreenTip = "Fetch Final Data";
+            this.btnShowBalanceSheet.SuperTip = "Retrieve Balance Sheet based on selected parameters";
+            this.btnShowBalanceSheet.Click += new Microsoft.Office.Tools.Ribbon.RibbonControlEventHandler(this.btnShowBalanceSheet_Click);
+
+            // 
+            // RibbonFinance
+            // 
             this.Name = "RibbonFinance";
             this.RibbonType = "Microsoft.Excel.Workbook";
             this.Tabs.Add(this.tabFinance);
+            this.Load += new Microsoft.Office.Tools.Ribbon.RibbonUIEventHandler(this.RibbonFinance_Load);
+        }
 
-            this.tabFinance.ResumeLayout(false);
-            this.grpDataFetch.ResumeLayout(false);
-            this.grpParameters.ResumeLayout(false);
-            this.grpOutput.ResumeLayout(false);
-            this.ResumeLayout(false);
+        #endregion
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonTab tabFinance;
+        internal Microsoft.Office.Tools.Ribbon.RibbonGroup groupAPI;
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnFetchCounterparties;
+        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown drpCounterparties;
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnSubmitCounterparty;
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown drpCurrency;
+        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown drpPeriod;
+        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown drpBasis;
+        internal Microsoft.Office.Tools.Ribbon.RibbonDropDown drpType;
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonEditBox numFromYear;
+        internal Microsoft.Office.Tools.Ribbon.RibbonEditBox numToYear;
+
+        internal Microsoft.Office.Tools.Ribbon.RibbonButton btnShowBalanceSheet;
+    }
+
+    partial class ThisRibbonCollection
+    {
+        internal RibbonFinance RibbonFinance
+        {
+            get { return this.GetRibbon<RibbonFinance>(); }
         }
     }
 }
