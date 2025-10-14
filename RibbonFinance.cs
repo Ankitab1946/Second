@@ -230,54 +230,90 @@ namespace ExcelFinanceAddIn
 
 //Extra code added for dynamically added data into excel
 
-// --- Parse API3 JSON dynamically ---
-var responseText = await response.Content.ReadAsStringAsync();
-MessageBox.Show("Response:\n" + responseText);
-
-// Parse as JObject
-var json = JObject.Parse(responseText);
-var highlights = json["Financialhighlights"] as JArray;
-
-if (highlights == null || highlights.Count == 0)
+private async void btnFetchFinalData_Click(object sender, RibbonControlEventArgs e)
 {
-    MessageBox.Show("No financial highlights found in response.");
-    return;
-}
+    try
+    {
+        // --- Build request payload ---
+        var requestData = new
+        {
+            CID = ddlCounterparty.SelectedItem?.Label,
+            FromYear = txtFromYear.Text,
+            toYear = txtToYear.Text,
+            Period = new List<string> { ddlPeriod.SelectedItem?.Label ?? "Annual" },
+            Basis = ddlBasis.SelectedItem?.Label ?? "text2",
+            Type = ddlType.SelectedItem?.Label ?? "Cons"
+        };
 
-// Create Excel sheet
-Excel.Worksheet sheet = Globals.ThisAddIn.Application.ActiveSheet;
-sheet.Cells.Clear(); // clear previous content
-int row = 1;
+        string jsonContent = Newtonsoft.Json.JsonConvert.SerializeObject(requestData, Newtonsoft.Json.Formatting.Indented);
+        MessageBox.Show("Request Data:\n" + jsonContent); // Debugging purpose
 
-// Extract all column names dynamically from the first record
-var allKeys = ((JObject)highlights[0])
+        using (HttpClient client = new HttpClient())
+        {
+            // Example API3 endpoint — replace with your actual URL
+            string apiUrl = "https://your-api-endpoint/api3";
+            var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response = await client.PostAsync(apiUrl, content);
+            response.EnsureSuccessStatusCode();
+
+            // --- Read and log response ---
+            string responseText = await response.Content.ReadAsStringAsync();
+            MessageBox.Show("Response:\n" + responseText);
+
+            // --- Parse response dynamically ---
+            var json = JObject.Parse(responseText);
+            var highlightsArray = json["Financialhighlights"] as JArray;
+
+            if (highlightsArray == null || highlightsArray.Count == 0)
+            {
+                MessageBox.Show("No financial highlights found in response.");
+                return;
+            }
+
+            // --- Prepare Excel sheet ---
+            Excel.Worksheet sheet = Globals.ThisAddIn.Application.ActiveSheet;
+            sheet.Cells.ClearContents();
+            int row = 1;
+
+            // --- Get all column names dynamically ---
+            var allKeys = ((JObject)highlightsArray[0])
                 .Properties()
                 .Select(p => p.Name)
-                // Exclude unwanted keys
-                .Where(k => k != "HS_1" && k != "ID2")
+                .Where(k => k != "HS_1" && k != "ID2") // exclude unwanted
                 .ToList();
 
-// Write headers
-int col = 1;
-foreach (var key in allKeys)
-{
-    sheet.Cells[row, col].Value = key;
-    col++;
-}
+            // --- Write headers ---
+            int col = 1;
+            foreach (var key in allKeys)
+            {
+                sheet.Cells[row, col].Value = key;
+                col++;
+            }
 
-// Write data rows
-row = 2;
-foreach (var record in highlights)
-{
-    col = 1;
-    foreach (var key in allKeys)
-    {
-        sheet.Cells[row, col].Value = record[key]?.ToString();
-        col++;
+            // --- Write data ---
+            row = 2;
+            foreach (var record in highlightsArray)
+            {
+                col = 1;
+                foreach (var key in allKeys)
+                {
+                    sheet.Cells[row, col].Value = record[key]?.ToString();
+                    col++;
+                }
+                row++;
+            }
+
+            sheet.Columns.AutoFit();
+            MessageBox.Show($"✅ Written {highlightsArray.Count} records with {allKeys.Count} columns (excluded: HS_1, ID2).");
+        }
     }
-    row++;
+    catch (HttpRequestException ex)
+    {
+        MessageBox.Show("Error fetching final data:\n" + ex.Message);
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show("Unexpected error:\n" + ex.Message);
+    }
 }
-
-// Autofit columns for better readability
-sheet.Columns.AutoFit();
-MessageBox.Show($"✅ Written {highlights.Count} records with {allKeys.Count} columns (excluded: HS_1, ID2).");
