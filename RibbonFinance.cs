@@ -8,40 +8,45 @@ using Newtonsoft.Json;
 
 namespace ExcelFinanceAddIn
 {
-    public partial class RibbonFinance
+    public partial class RibbonFinance : RibbonBase
     {
-        // HttpClient instance
+        // ==============================
+        // Fields
+        // ==============================
         private readonly HttpClient client = new HttpClient();
-
-        // Counterparty cache
         private List<string> counterparties = new List<string>();
 
-        // Ribbon Load
-        private void RibbonFinance_Load(object sender, RibbonUIEventArgs e)
+        // ==============================
+        // Constructor
+        // ==============================
+        public RibbonFinance()
+            : base(Globals.Factory.GetRibbonFactory())
         {
-            // You can initialize default dropdown items here if needed
+            InitializeComponent();
         }
 
         // ==============================
-        // BUTTON HANDLERS
+        // Ribbon Load Event
         // ==============================
+        private void RibbonFinance_Load(object sender, RibbonUIEventArgs e)
+        {
+            // Optional: Initialize default dropdowns or states
+        }
 
-        // 1️⃣ Button: Fetch Counterparties (API1)
+        // ==============================
+        // Button: Fetch Counterparties
+        // ==============================
         private async void btnFetchCounterparties_Click(object sender, RibbonControlEventArgs e)
         {
             try
             {
-                string apiUrl = "https://mocki.io/v1/fee0df8b-fc19-4b5b-b5d3-3b2218b2212d"; // Example mock API 1
+                string apiUrl = "https://mocki.io/v1/fee0df8b-fc19-4b5b-b5d3-3b2218b2212d"; // Mock API
                 string jsonResponse = await client.GetStringAsync(apiUrl);
 
-                // Deserialize response
                 var responseObj = JsonConvert.DeserializeObject<Api1Response>(jsonResponse);
                 counterparties = responseObj?.Counterparties ?? new List<string>();
 
-                // Clear existing items
                 drpCounterparties.Items.Clear();
-
-                // Populate dropdown
                 foreach (var name in counterparties)
                 {
                     drpCounterparties.Items.Add(CreateItem(name));
@@ -55,7 +60,9 @@ namespace ExcelFinanceAddIn
             }
         }
 
-        // 2️⃣ Button: Fetch Details (API2)
+        // ==============================
+        // Button: Submit Counterparty
+        // ==============================
         private async void btnSubmitCounterparty_Click(object sender, RibbonControlEventArgs e)
         {
             try
@@ -68,17 +75,15 @@ namespace ExcelFinanceAddIn
 
                 string selectedCounterparty = drpCounterparties.SelectedItem.Label;
                 string apiUrl = $"https://mocki.io/v1/4bdf2b94-54b8-4cb9-8b3c-ec5ddf5551b3?name={selectedCounterparty}";
-
                 string jsonResponse = await client.GetStringAsync(apiUrl);
-                var details = JsonConvert.DeserializeObject<CounterpartyDetails>(jsonResponse);
 
+                var details = JsonConvert.DeserializeObject<CounterpartyDetails>(jsonResponse);
                 if (details == null)
                 {
                     MessageBox.Show("No details found for the selected counterparty.");
                     return;
                 }
 
-                // Populate dropdowns
                 PopulateDropdown(drpCurrency, details.Currency);
                 PopulateDropdown(drpPeriod, details.Period);
                 PopulateDropdown(drpBasis, details.Basis);
@@ -91,11 +96,13 @@ namespace ExcelFinanceAddIn
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error fetching details:\n{ex.Message}", "Error");
+                MessageBox.Show($"Error fetching counterparty details:\n{ex.Message}", "Error");
             }
         }
 
-        // 3️⃣ Button: Show Balance Sheet (API3)
+        // ==============================
+        // Button: Show Balance Sheet
+        // ==============================
         private async void btnShowBalanceSheet_Click(object sender, RibbonControlEventArgs e)
         {
             try
@@ -108,17 +115,15 @@ namespace ExcelFinanceAddIn
 
                 string selectedCounterparty = drpCounterparties.SelectedItem.Label;
                 string apiUrl = $"https://mocki.io/v1/0abde292-3180-4a1a-98e4-0f35d1dc642e?counterparty={selectedCounterparty}";
-
                 string jsonResponse = await client.GetStringAsync(apiUrl);
-                var balanceData = JsonConvert.DeserializeObject<List<BalanceSheetItem>>(jsonResponse);
 
+                var balanceData = JsonConvert.DeserializeObject<List<BalanceSheetItem>>(jsonResponse);
                 if (balanceData == null || balanceData.Count == 0)
                 {
                     MessageBox.Show("No balance sheet data found.");
                     return;
                 }
 
-                // Insert into Excel
                 var sheet = Globals.ThisAddIn.Application.ActiveSheet;
                 sheet.Cells[1, 1].Value = "Counterparty";
                 sheet.Cells[1, 2].Value = "Year";
@@ -144,16 +149,13 @@ namespace ExcelFinanceAddIn
         }
 
         // ==============================
-        // HELPER METHODS
+        // Helper Methods
         // ==============================
-
         private void PopulateDropdown(RibbonDropDown dropdown, string singleValue)
         {
             dropdown.Items.Clear();
             if (!string.IsNullOrEmpty(singleValue))
-            {
                 dropdown.Items.Add(CreateItem(singleValue));
-            }
         }
 
         private void PopulateDropdown(RibbonDropDown dropdown, List<string> values)
@@ -162,9 +164,7 @@ namespace ExcelFinanceAddIn
             if (values == null || values.Count == 0) return;
 
             foreach (var val in values)
-            {
                 dropdown.Items.Add(CreateItem(val));
-            }
         }
 
         private RibbonDropDownItem CreateItem(string label)
@@ -176,9 +176,8 @@ namespace ExcelFinanceAddIn
     }
 
     // ==============================
-    // DATA MODELS
+    // Data Models
     // ==============================
-
     public class Api1Response
     {
         public List<string> Counterparties { get; set; }
