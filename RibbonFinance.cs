@@ -226,3 +226,58 @@ namespace ExcelFinanceAddIn
         public double Profit { get; set; }
     }
 }
+
+
+//Extra code added for dynamically added data into excel
+
+// --- Parse API3 JSON dynamically ---
+var responseText = await response.Content.ReadAsStringAsync();
+MessageBox.Show("Response:\n" + responseText);
+
+// Parse as JObject
+var json = JObject.Parse(responseText);
+var highlights = json["Financialhighlights"] as JArray;
+
+if (highlights == null || highlights.Count == 0)
+{
+    MessageBox.Show("No financial highlights found in response.");
+    return;
+}
+
+// Create Excel sheet
+Excel.Worksheet sheet = Globals.ThisAddIn.Application.ActiveSheet;
+sheet.Cells.Clear(); // clear previous content
+int row = 1;
+
+// Extract all column names dynamically from the first record
+var allKeys = ((JObject)highlights[0])
+                .Properties()
+                .Select(p => p.Name)
+                // Exclude unwanted keys
+                .Where(k => k != "HS_1" && k != "ID2")
+                .ToList();
+
+// Write headers
+int col = 1;
+foreach (var key in allKeys)
+{
+    sheet.Cells[row, col].Value = key;
+    col++;
+}
+
+// Write data rows
+row = 2;
+foreach (var record in highlights)
+{
+    col = 1;
+    foreach (var key in allKeys)
+    {
+        sheet.Cells[row, col].Value = record[key]?.ToString();
+        col++;
+    }
+    row++;
+}
+
+// Autofit columns for better readability
+sheet.Columns.AutoFit();
+MessageBox.Show($"✅ Written {highlights.Count} records with {allKeys.Count} columns (excluded: HS_1, ID2).");
