@@ -1,209 +1,187 @@
 using System;
 using System.Collections.Generic;
-using System.Net;
 using System.Net.Http;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Office.Tools.Ribbon;
-using Excel = Microsoft.Office.Interop.Excel;
 using Newtonsoft.Json;
 
 namespace ExcelFinanceAddIn
 {
     public partial class RibbonFinance
     {
-        private static readonly HttpClient client = new HttpClient();
-        private List<Counterparty> counterparties = new List<Counterparty>();
+        // HttpClient instance
+        private readonly HttpClient client = new HttpClient();
 
+        // Counterparty cache
+        private List<string> counterparties = new List<string>();
+
+        // Ribbon Load
         private void RibbonFinance_Load(object sender, RibbonUIEventArgs e)
         {
-            // Ignore SSL certificate validation for testing
-            ServicePointManager.ServerCertificateValidationCallback += (s, cert, chain, sslPolicyErrors) => true;
+            // You can initialize default dropdown items here if needed
         }
 
-        // 1️⃣ Fetch Counterparty List (API1)
-        private async void btnFetchAPI_Click(object sender, RibbonControlEventArgs e)
+        // ==============================
+        // BUTTON HANDLERS
+        // ==============================
+
+        // 1️⃣ Button: Fetch Counterparties (API1)
+        private async void btnFetchCounterparties_Click(object sender, RibbonControlEventArgs e)
         {
             try
             {
-                ddlCounterparty.Items.Clear();
+                string apiUrl = "https://mocki.io/v1/fee0df8b-fc19-4b5b-b5d3-3b2218b2212d"; // Example mock API 1
+                string jsonResponse = await client.GetStringAsync(apiUrl);
 
-                string apiUrl = "https://your-api-endpoint.com/api/counterparties"; // Replace with your actual API1
-                var response = await client.GetAsync(apiUrl);
+                // Deserialize response
+                var responseObj = JsonConvert.DeserializeObject<Api1Response>(jsonResponse);
+                counterparties = responseObj?.Counterparties ?? new List<string>();
 
-                if (!response.IsSuccessStatusCode)
+                // Clear existing items
+                drpCounterparties.Items.Clear();
+
+                // Populate dropdown
+                foreach (var name in counterparties)
                 {
-                    MessageBox.Show($"Error Fetching Counterparties: {response.StatusCode}");
-                    return;
+                    drpCounterparties.Items.Add(CreateItem(name));
                 }
 
-                string json = await response.Content.ReadAsStringAsync();
-                counterparties = JsonConvert.DeserializeObject<List<Counterparty>>(json);
-
-                foreach (var cp in counterparties)
-                {
-                    var item = Globals.Factory.GetRibbonFactory().CreateRibbonDropDownItem();
-                    item.Label = cp.CID.ToString();
-                    ddlCounterparty.Items.Add(item);
-                }
-
-                MessageBox.Show("Counterparties loaded successfully!");
+                MessageBox.Show($"Fetched {counterparties.Count} counterparties successfully!", "Success");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error Fetching Counterparties: {ex.Message}");
+                MessageBox.Show($"Error fetching counterparties:\n{ex.Message}", "Error");
             }
         }
 
-        // 2️⃣ Show selected Counterparty details (Popup)
-        private void ddlCounterparty_SelectionChanged(object sender, RibbonControlEventArgs e)
-        {
-            var selectedId = ddlCounterparty.SelectedItem?.Label;
-            if (string.IsNullOrEmpty(selectedId)) return;
-
-            var cp = counterparties.Find(c => c.CID.ToString() == selectedId);
-            if (cp != null)
-            {
-                string message = $"CID | CName | ShortName\n{cp.CID} | {cp.CName} | {cp.ShortName}";
-                MessageBox.Show(message, "Counterparty Details");
-            }
-        }
-
-        // 3️⃣ Submit Counterparty (API2)
+        // 2️⃣ Button: Fetch Details (API2)
         private async void btnSubmitCounterparty_Click(object sender, RibbonControlEventArgs e)
         {
             try
             {
-                var selectedId = ddlCounterparty.SelectedItem?.Label;
-                if (string.IsNullOrEmpty(selectedId))
+                if (drpCounterparties.SelectedItem == null)
                 {
-                    MessageBox.Show("Please select a Counterparty.");
+                    MessageBox.Show("Please select a counterparty first.");
                     return;
                 }
 
-                string apiUrl = "https://your-api-endpoint.com/api/counterparty/details"; // Replace with API2
-                var requestData = new { CID = selectedId };
-                var content = new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json");
+                string selectedCounterparty = drpCounterparties.SelectedItem.Label;
+                string apiUrl = $"https://mocki.io/v1/4bdf2b94-54b8-4cb9-8b3c-ec5ddf5551b3?name={selectedCounterparty}";
 
-                var response = await client.PostAsync(apiUrl, content);
-                if (!response.IsSuccessStatusCode)
+                string jsonResponse = await client.GetStringAsync(apiUrl);
+                var details = JsonConvert.DeserializeObject<CounterpartyDetails>(jsonResponse);
+
+                if (details == null)
                 {
-                    MessageBox.Show($"Error Submitting Counterparty: {response.StatusCode}");
+                    MessageBox.Show("No details found for the selected counterparty.");
                     return;
                 }
 
-                string json = await response.Content.ReadAsStringAsync();
-                var details = JsonConvert.DeserializeObject<CounterpartyDetails>(json);
+                // Populate dropdowns
+                PopulateDropdown(drpCurrency, details.Currency);
+                PopulateDropdown(drpPeriod, details.Period);
+                PopulateDropdown(drpBasis, details.Basis);
+                PopulateDropdown(drpType, details.Type);
 
-                // Populate dropdowns with response
-                ddlCurrency.Items.Clear();
-                ddlPeriod.Items.Clear();
-                ddlBasis.Items.Clear();
-                ddlType.Items.Clear();
-
-                ddlCurrency.Items.Add(CreateItem(details.Currency));
-                foreach (var p in details.Period) ddlPeriod.Items.Add(CreateItem(p));
-                foreach (var b in details.Basis) ddlBasis.Items.Add(CreateItem(b));
-                foreach (var t in details.Type) ddlType.Items.Add(CreateItem(t));
-
-                ddlCurrency.SelectedItem = ddlCurrency.Items[0];
-                ddlPeriod.SelectedItem = ddlPeriod.Items[0];
-                ddlBasis.SelectedItem = ddlBasis.Items.Count > 1 ? ddlBasis.Items[1] : ddlBasis.Items[0];
-                ddlType.SelectedItem = ddlType.Items[0];
-
-                txtFromYear.Text = details.FromYear.ToString();
-                txtToYear.Text = details.ToYear.ToString();
+                numFromYear.Text = details.FromYear.ToString();
+                numToYear.Text = details.ToYear.ToString();
 
                 MessageBox.Show("Counterparty details loaded successfully!");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error Submitting Counterparty: {ex.Message}");
+                MessageBox.Show($"Error fetching details:\n{ex.Message}", "Error");
             }
         }
 
-        // 4️⃣ Fetch Final Data (API3)
-        private async void btnFetchFinalData_Click(object sender, RibbonControlEventArgs e)
+        // 3️⃣ Button: Show Balance Sheet (API3)
+        private async void btnShowBalanceSheet_Click(object sender, RibbonControlEventArgs e)
         {
             try
             {
-                var selectedId = ddlCounterparty.SelectedItem?.Label;
-                if (string.IsNullOrEmpty(selectedId))
+                if (drpCounterparties.SelectedItem == null)
                 {
-                    MessageBox.Show("Please select a Counterparty first.");
+                    MessageBox.Show("Please select a counterparty first.");
                     return;
                 }
 
-                string apiUrl = "https://your-api-endpoint.com/api/finaldata"; // Replace with API3
-                var requestData = new
-                {
-                    CID = selectedId,
-                    FromYear = txtFromYear.Text,
-                    ToYear = txtToYear.Text,
-                    Period = ddlPeriod.SelectedItem?.Label,
-                    Basis = ddlBasis.SelectedItem?.Label,
-                    Type = ddlType.SelectedItem?.Label
-                };
+                string selectedCounterparty = drpCounterparties.SelectedItem.Label;
+                string apiUrl = $"https://mocki.io/v1/0abde292-3180-4a1a-98e4-0f35d1dc642e?counterparty={selectedCounterparty}";
 
-                var content = new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json");
-                var response = await client.PostAsync(apiUrl, content);
+                string jsonResponse = await client.GetStringAsync(apiUrl);
+                var balanceData = JsonConvert.DeserializeObject<List<BalanceSheetItem>>(jsonResponse);
 
-                if (!response.IsSuccessStatusCode)
+                if (balanceData == null || balanceData.Count == 0)
                 {
-                    MessageBox.Show($"Error Fetching Final Data: {response.StatusCode}");
+                    MessageBox.Show("No balance sheet data found.");
                     return;
                 }
 
-                string json = await response.Content.ReadAsStringAsync();
-                var data = JsonConvert.DeserializeObject<List<Dictionary<string, object>>>(json);
+                // Insert into Excel
+                var sheet = Globals.ThisAddIn.Application.ActiveSheet;
+                sheet.Cells[1, 1].Value = "Counterparty";
+                sheet.Cells[1, 2].Value = "Year";
+                sheet.Cells[1, 3].Value = "Revenue";
+                sheet.Cells[1, 4].Value = "Profit";
 
-                WriteJsonToExcel(data);
-                MessageBox.Show("Data populated successfully in Excel!");
+                int row = 2;
+                foreach (var item in balanceData)
+                {
+                    sheet.Cells[row, 1].Value = selectedCounterparty;
+                    sheet.Cells[row, 2].Value = item.Year;
+                    sheet.Cells[row, 3].Value = item.Revenue;
+                    sheet.Cells[row, 4].Value = item.Profit;
+                    row++;
+                }
+
+                MessageBox.Show("Balance sheet data inserted successfully!");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error Fetching Final Data: {ex.Message}");
+                MessageBox.Show($"Error displaying balance sheet:\n{ex.Message}", "Error");
             }
         }
 
-        // 🔧 Helper to create dropdown item
+        // ==============================
+        // HELPER METHODS
+        // ==============================
+
+        private void PopulateDropdown(RibbonDropDown dropdown, string singleValue)
+        {
+            dropdown.Items.Clear();
+            if (!string.IsNullOrEmpty(singleValue))
+            {
+                dropdown.Items.Add(CreateItem(singleValue));
+            }
+        }
+
+        private void PopulateDropdown(RibbonDropDown dropdown, List<string> values)
+        {
+            dropdown.Items.Clear();
+            if (values == null || values.Count == 0) return;
+
+            foreach (var val in values)
+            {
+                dropdown.Items.Add(CreateItem(val));
+            }
+        }
+
         private RibbonDropDownItem CreateItem(string label)
         {
             var item = Globals.Factory.GetRibbonFactory().CreateRibbonDropDownItem();
             item.Label = label;
             return item;
         }
-
-        // 📊 Write JSON Data to Excel Sheet
-        private void WriteJsonToExcel(List<Dictionary<string, object>> jsonData)
-        {
-            if (jsonData == null || jsonData.Count == 0)
-            {
-                MessageBox.Show("No data to write to Excel.");
-                return;
-            }
-
-            Excel.Worksheet sheet = Globals.ThisAddIn.Application.ActiveSheet;
-            var headers = new List<string>(jsonData[0].Keys);
-
-            // Write headers
-            for (int i = 0; i < headers.Count; i++)
-                sheet.Cells[1, i + 1].Value = headers[i];
-
-            // Write rows
-            for (int i = 0; i < jsonData.Count; i++)
-                for (int j = 0; j < headers.Count; j++)
-                    sheet.Cells[i + 2, j + 1].Value = jsonData[i][headers[j]];
-        }
     }
 
-    // Data Models
-    public class Counterparty
+    // ==============================
+    // DATA MODELS
+    // ==============================
+
+    public class Api1Response
     {
-        public int CID { get; set; }
-        public string CName { get; set; }
-        public string ShortName { get; set; }
+        public List<string> Counterparties { get; set; }
     }
 
     public class CounterpartyDetails
@@ -214,5 +192,12 @@ namespace ExcelFinanceAddIn
         public List<string> Type { get; set; }
         public int FromYear { get; set; }
         public int ToYear { get; set; }
+    }
+
+    public class BalanceSheetItem
+    {
+        public int Year { get; set; }
+        public double Revenue { get; set; }
+        public double Profit { get; set; }
     }
 }
