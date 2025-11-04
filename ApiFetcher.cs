@@ -88,95 +88,71 @@
 // }
 
 using System;
-using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Windows.Forms;
-using Newtonsoft.Json.Linq;
 
-namespace YourVSTOAddIn
+namespace SSOExample
 {
-    public static class ApiFetcher
+    public class Program
     {
-        private static readonly string baseUrl = "https://auth.client.xyz.com";
-        private static readonly string appUrl = "http://localhost:8000/api/v1";
-        private static readonly string userName = "sdsjdfh@intranet.xyz.com";
-        private static readonly string password = Environment.GetEnvironmentVariable("Password") ?? "";
-
-        public static async Task<string> FetchDataAsync()
+        static async Task Main(string[] args)
         {
+            string baseUrl = "https://auth.client.xyz.com";
+            string appUrl = "https://app.client.xyz.com/api/v1";
+
             try
             {
-                using (var handler = new HttpClientHandler())
+                using (var handler = new HttpClientHandler
                 {
-                    handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true;
-                    handler.AllowAutoRedirect = true;
+                    UseCookies = true,
+                    CookieContainer = new CookieContainer(),
+                    UseDefaultCredentials = true,   // 🔹 Enables Windows/AD-based SSO
+                    AllowAutoRedirect = true
+                })
+                using (var client = new HttpClient(handler))
+                {
+                    // Step 1: Request SSO authentication (no username/password)
+                    var ssoUrl = $"{baseUrl}/authn/authenticate/sso";
+                    Console.WriteLine($"Requesting SSO from: {ssoUrl}");
 
-                    using (var client = new HttpClient(handler))
+                    var ssoResponse = await client.GetAsync(ssoUrl);
+                    if (!ssoResponse.IsSuccessStatusCode)
                     {
-                        //
-                        // STEP 1 – Authenticate & Get Token
-                        //
-                        var authnUrl = $"{baseUrl}/authn/authenticate/sso";
-                        var authUrl = $"{authnUrl}?appname=Testprojectct&redirecturl=http://none";
+                        Console.WriteLine($"SSO failed: {ssoResponse.StatusCode}");
+                        return;
+                    }
 
-                        var byteArray = Encoding.ASCII.GetBytes($"{userName}:{password}");
-                        client.DefaultRequestHeaders.Authorization =
-                            new AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray));
+                    // At this point, the user’s domain credentials (Kerberos/NTLM) are used automatically
+                    // The cookie container should now have an SSO session cookie
+                    var cookies = handler.CookieContainer.GetCookies(new Uri(baseUrl));
+                    foreach (Cookie cookie in cookies)
+                    {
+                        Console.WriteLine($"Cookie: {cookie.Name} = {cookie.Value}");
+                    }
 
-                        MessageBox.Show($"Calling: {authUrl}", "Debug - Step 1");
+                    // Step 2: Use SSO cookie to call app API
+                    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                    var apiResponse = await client.GetAsync($"{appUrl}/user/profile");
 
-                        var tokenResponse = await client.GetAsync(authUrl);
-                        var tokenHtml = await tokenResponse.Content.ReadAsStringAsync();
-
-                        if (!tokenResponse.IsSuccessStatusCode)
-                            throw new Exception($"Auth failed: {tokenResponse.StatusCode}\n\n{tokenHtml}");
-
-                        //
-                        // Try to parse the token out of HTML form
-                        //
-                        var tokenMatch = Regex.Match(tokenHtml, @"name\s*=\s*[""']?Token[""']?\s*value\s*=\s*[""']?(?<token>[^""'>\s]+)");
-                        var appToken = tokenMatch.Success ? tokenMatch.Groups["token"].Value : null;
-
-                        if (string.IsNullOrEmpty(appToken))
-                        {
-                            MessageBox.Show(tokenHtml, "HTML Response");
-                            throw new Exception("❌ Token not found in HTML response.");
-                        }
-
-                        MessageBox.Show($"✅ Token Found: {appToken}", "Debug - Token Extracted");
-
-                        //
-                        // STEP 2 – Exchange token for session / cookie
-                        //
-                        var jsonData = new JObject { ["appToken"] = appToken }.ToString();
-                        var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-
-                        var sessionUrl = $"{appUrl}/user";
-                        MessageBox.Show($"Posting token to: {sessionUrl}", "Debug - Step 2");
-
-                        var authResponse = await client.PostAsync(sessionUrl, content);
-                        var body = await authResponse.Content.ReadAsStringAsync();
-
-                        MessageBox.Show($"Status: {authResponse.StatusCode}\n\nResponse:\n{body}", "Debug - Step 2 Result");
-
-                        if (!authResponse.IsSuccessStatusCode)
-                            throw new Exception($"Step 2 failed: {authResponse.StatusCode}\nBody: {body}");
-
-                        //
-                        // STEP 3 – Return success or cookie data
-                        //
-                        return appToken;
+                    if (apiResponse.IsSuccessStatusCode)
+                    {
+                        var result = await apiResponse.Content.ReadAsStringAsync();
+                        Console.WriteLine("✅ API Call Successful!");
+                        Console.WriteLine(result);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"API Call Failed: {apiResponse.StatusCode}");
+                        string err = await apiResponse.Content.ReadAsStringAsync();
+                        Console.WriteLine($"Error: {err}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error: {ex.Message}", "API Fetch Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return null;
+                Console.WriteLine($"❌ Exception: {ex.Message}");
             }
         }
     }
