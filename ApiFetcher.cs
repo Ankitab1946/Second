@@ -88,83 +88,96 @@
 // }
 
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Newtonsoft.Json.Linq;
 
 namespace YourVSTOAddIn
 {
-    public class ApiFetcher
+    public static class ApiFetcher
     {
         private static readonly string baseUrl = "https://auth.client.xyz.com";
         private static readonly string appUrl = "http://localhost:8000/api/v1";
         private static readonly string userName = "sdsjdfh@intranet.xyz.com";
         private static readonly string password = Environment.GetEnvironmentVariable("Password") ?? "";
 
-        public static async Task FetchDataAsync()
+        public static async Task<string> FetchDataAsync()
         {
             try
             {
-                using (HttpClientHandler handler = new HttpClientHandler())
+                using (var handler = new HttpClientHandler())
                 {
                     handler.ServerCertificateCustomValidationCallback = (msg, cert, chain, errors) => true;
-                    using (HttpClient client = new HttpClient(handler))
-                    {
-                        var loginUrl = $"{baseUrl}/authn/authenticate/sso";
-                        var authParams = $"appname=Testprojectct&redirecturl=http://none";
-                        var byteArray = System.Text.Encoding.ASCII.GetBytes($"{userName}:{password}");
-                        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray));
+                    handler.AllowAutoRedirect = true;
 
-                        var tokenResponse = await client.GetAsync($"{loginUrl}?{authParams}");
-                        var htmlContent = await tokenResponse.Content.ReadAsStringAsync();
+                    using (var client = new HttpClient(handler))
+                    {
+                        //
+                        // STEP 1 – Authenticate & Get Token
+                        //
+                        var authnUrl = $"{baseUrl}/authn/authenticate/sso";
+                        var authUrl = $"{authnUrl}?appname=Testprojectct&redirecturl=http://none";
+
+                        var byteArray = Encoding.ASCII.GetBytes($"{userName}:{password}");
+                        client.DefaultRequestHeaders.Authorization =
+                            new AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray));
+
+                        MessageBox.Show($"Calling: {authUrl}", "Debug - Step 1");
+
+                        var tokenResponse = await client.GetAsync(authUrl);
+                        var tokenHtml = await tokenResponse.Content.ReadAsStringAsync();
 
                         if (!tokenResponse.IsSuccessStatusCode)
+                            throw new Exception($"Auth failed: {tokenResponse.StatusCode}\n\n{tokenHtml}");
+
+                        //
+                        // Try to parse the token out of HTML form
+                        //
+                        var tokenMatch = Regex.Match(tokenHtml, @"name\s*=\s*[""']?Token[""']?\s*value\s*=\s*[""']?(?<token>[^""'>\s]+)");
+                        var appToken = tokenMatch.Success ? tokenMatch.Groups["token"].Value : null;
+
+                        if (string.IsNullOrEmpty(appToken))
                         {
-                            MessageBox.Show($"Login failed: {tokenResponse.StatusCode}", "Auth Error");
-                            return;
+                            MessageBox.Show(tokenHtml, "HTML Response");
+                            throw new Exception("❌ Token not found in HTML response.");
                         }
 
-                        // 🧩 Extract token from HTML form
-                        string token = ExtractTokenFromHtml(htmlContent);
+                        MessageBox.Show($"✅ Token Found: {appToken}", "Debug - Token Extracted");
 
-                        if (string.IsNullOrEmpty(token))
-                        {
-                            MessageBox.Show("Token not found in HTML response.", "Parse Error");
-                            return;
-                        }
+                        //
+                        // STEP 2 – Exchange token for session / cookie
+                        //
+                        var jsonData = new JObject { ["appToken"] = appToken }.ToString();
+                        var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
 
-                        MessageBox.Show($"✅ Extracted Token:\n{token}", "Success");
+                        var sessionUrl = $"{appUrl}/user";
+                        MessageBox.Show($"Posting token to: {sessionUrl}", "Debug - Step 2");
 
-                        // Use token for next call
-                        await UseTokenAsync(client, token);
+                        var authResponse = await client.PostAsync(sessionUrl, content);
+                        var body = await authResponse.Content.ReadAsStringAsync();
+
+                        MessageBox.Show($"Status: {authResponse.StatusCode}\n\nResponse:\n{body}", "Debug - Step 2 Result");
+
+                        if (!authResponse.IsSuccessStatusCode)
+                            throw new Exception($"Step 2 failed: {authResponse.StatusCode}\nBody: {body}");
+
+                        //
+                        // STEP 3 – Return success or cookie data
+                        //
+                        return appToken;
                     }
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error: {ex.Message}", "API Fetch Error");
+                MessageBox.Show($"Error: {ex.Message}", "API Fetch Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return null;
             }
-        }
-
-        private static string ExtractTokenFromHtml(string html)
-        {
-            // Use Regex to find the token value inside <input type="hidden" name="Token" value="...">
-            var match = Regex.Match(html, @"name\s*=\s*[""']Token[""']\s*value\s*=\s*[""']([^""']+)[""']", RegexOptions.IgnoreCase);
-            return match.Success ? match.Groups[1].Value : null;
-        }
-
-        private static async Task UseTokenAsync(HttpClient client, string token)
-        {
-            var formData = new FormUrlEncodedContent(new[]
-            {
-                new KeyValuePair<string, string>("appToken", token)
-            });
-
-            var response = await client.PostAsync($"{appUrl}/user", formData);
-            string result = await response.Content.ReadAsStringAsync();
-
-            MessageBox.Show($"Response using Token:\n{result.Substring(0, Math.Min(result.Length, 300))}", "Step 2 Success");
         }
     }
 }
