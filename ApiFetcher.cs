@@ -172,9 +172,9 @@ private static string ReadPassword()
             pass += key.KeyChar;
             Console.Write("*");
         }
-        else if(key.Key == ConsoleKey.Backspace && pass.Length > 0)
+        else if (key.Key == ConsoleKey.Backspace && pass.Length > 0)
         {
-            pass = pass[0..^1];
+            pass = pass.Substring(0, pass.Length - 1); // ✅ works in C# 7.3
             Console.Write("\b \b");
         }
     }
