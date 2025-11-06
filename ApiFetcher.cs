@@ -185,3 +185,122 @@ private static string ReadPassword()
 }
 
 private static readonly string password = ReadPassword();
+///////////////////////////////////Dynamic JSON /////////////////////////////////////////////////
+
+using Newtonsoft.Json.Linq;
+using Excel = Microsoft.Office.Interop.Excel;
+using System.Collections.Generic;
+using System.Linq;
+using System.Windows.Forms;
+
+private void btnShowBalanceSheet_Click(object sender, RibbonControlEventArgs e)
+{
+    try
+    {
+        // === Replace this with your API response JSON variable ===
+        string jsonResponse = @"{
+          'finhighlights': [
+            {
+              'id': 'test123',
+              'dataid': '123',
+              'HS_23': { 'basevalues': 0.0, 'adjustedvalue': 2.45, 'modified': false, 'impacted': false }
+            },
+            {
+              'id': 'test124',
+              'dataid': '124',
+              'HS_45': { 'basevalues': -1.0, 'adjustedvalue': 0.45, 'modified': false, 'impacted': false }
+            }
+          ]
+        }";
+
+        JObject jsonObj = JObject.Parse(jsonResponse);
+        JArray items = (JArray)jsonObj["finhighlights"];
+
+        if (items == null || items.Count == 0)
+        {
+            MessageBox.Show("No records found in 'finhighlights'.");
+            return;
+        }
+
+        // STEP 1: Collect all unique column names dynamically
+        var allColumns = new HashSet<string>();
+
+        List<Dictionary<string, object>> flattenedRows = new List<Dictionary<string, object>>();
+
+        foreach (JObject item in items)
+        {
+            var flat = Flatten(item);
+            flattenedRows.Add(flat);
+
+            foreach (var key in flat.Keys)
+                allColumns.Add(key);
+        }
+
+        var orderedColumns = allColumns.ToList(); // keep consistent order
+
+        // STEP 2: Write to Excel
+        Excel.Application app = Globals.ThisAddIn.Application;
+        Excel.Worksheet ws = app.ActiveSheet;
+        ws.Cells.Clear();
+
+        // Write Header Row
+        for (int col = 0; col < orderedColumns.Count; col++)
+        {
+            ws.Cells[1, col + 1].Value = orderedColumns[col];
+        }
+
+        // Apply header styling
+        Excel.Range header = ws.Range[ws.Cells[1, 1], ws.Cells[1, orderedColumns.Count]];
+        header.Interior.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.SteelBlue);
+        header.Font.Color = System.Drawing.ColorTranslator.ToOle(System.Drawing.Color.White);
+        header.Font.Bold = true;
+
+        // Write Data Rows
+        int row = 2;
+        foreach (var dataRow in flattenedRows)
+        {
+            for (int col = 0; col < orderedColumns.Count; col++)
+            {
+                dataRow.TryGetValue(orderedColumns[col], out object value);
+                ws.Cells[row, col + 1].Value = value;
+            }
+            row++;
+        }
+
+        // Auto-fit columns + add borders
+        ws.Columns.AutoFit();
+        Excel.Range used = ws.UsedRange;
+        used.Borders.LineStyle = Excel.XlLineStyle.xlContinuous;
+
+        MessageBox.Show("✅ JSON Successfully Written to Excel!", "Success");
+
+    }
+    catch (System.Exception ex)
+    {
+        MessageBox.Show($"Error: {ex.Message}", "JSON Parse Error");
+    }
+}
+
+// === Helper: Recursively Flatten JSON ===
+private Dictionary<string, object> Flatten(JObject obj, string prefix = "")
+{
+    var dict = new Dictionary<string, object>();
+
+    foreach (var prop in obj.Properties())
+    {
+        string key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}.{prop.Name}";
+
+        if (prop.Value is JObject nestedObject)
+        {
+            var nestedDict = Flatten(nestedObject, key);
+            foreach (var item in nestedDict)
+                dict[item.Key] = item.Value;
+        }
+        else
+        {
+            dict[key] = prop.Value.Type == JTokenType.Null ? null : ((JValue)prop.Value).Value;
+        }
+    }
+
+    return dict;
+}
