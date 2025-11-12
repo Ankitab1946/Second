@@ -58,113 +58,126 @@ if file1 and file2:
     edited_mapping = st.data_editor(mapping_df, num_rows="dynamic", key="map_editor")
 
     # --- Step 4: Comparison Logic ---
-    if st.button("🚀 Run Comparison"):
-        summary_rows = []
-        excel_output = io.BytesIO()
+if st.button("🚀 Run Comparison"):
+    summary_rows = []
+    excel_output = io.BytesIO()
 
-        # Build output file name
-        base_filename = f"{file1_name}_comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    # Build output file name
+    base_filename = f"{file1_name}_comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
-        with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
-            workbook = writer.book
+    with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
+        workbook = writer.book
 
-            # Define highlight format
-            highlight_fmt = workbook.add_format({
-                "bg_color": "#FFF59D",  # light yellow
-                "font_color": "#000000"
+        # Define highlight format
+        highlight_fmt = workbook.add_format({
+            "bg_color": "#FFF59D",  # light yellow
+            "font_color": "#000000"
+        })
+
+        # We'll write detail sheets first, store their names and summary info
+        sheet_summaries = []
+
+        for _, row in edited_mapping.iterrows():
+            if row["Skip Comparison"]:
+                st.info(f"⏭️ Skipping sheet '{row['Workbook A Sheet']}'")
+                continue
+
+            sheetA_name = row["Workbook A Sheet"]
+            sheetB_name = row["Workbook B Sheet"]
+
+            if sheetB_name not in sheetsB:
+                st.warning(f"⚠️ Sheet '{sheetB_name}' not found in Workbook B — skipped")
+                continue
+
+            dfA = sheetsA[sheetA_name].fillna("")
+            dfB = sheetsB[sheetB_name].fillna("")
+
+            # Align column sets
+            common_cols = sorted(list(set(dfA.columns).intersection(set(dfB.columns))))
+            extra_cols_A = list(set(dfA.columns) - set(dfB.columns))
+            extra_cols_B = list(set(dfB.columns) - set(dfA.columns))
+
+            # Align row count
+            max_rows = max(len(dfA), len(dfB))
+            dfA = dfA.reindex(range(max_rows)).fillna("")
+            dfB = dfB.reindex(range(max_rows)).fillna("")
+
+            dfA_common = dfA[common_cols].reset_index(drop=True)
+            dfB_common = dfB[common_cols].reset_index(drop=True)
+
+            # Compare cell values
+            diff_mask = dfA_common.ne(dfB_common)
+            changed_cells = np.where(diff_mask)
+            num_changes = len(changed_cells[0])
+
+            # --- ✅ Build difference report (Row + Column numbers + Excel letters) ---
+            diff_records = []
+            for i, j in zip(*changed_cells):
+                col_name = common_cols[j]
+                try:
+                    col_pos = dfA.columns.get_loc(col_name) + 1
+                except Exception:
+                    col_pos = j + 1  # fallback
+
+                excel_row_num = i + 2
+                col_letter = get_column_letter(col_pos)
+
+                diff_records.append({
+                    "Row Number": excel_row_num,
+                    "Column Number": col_pos,
+                    "Column Letter": col_letter,
+                    "Column Name": col_name,
+                    "Workbook A Value": dfA_common.iat[i, j],
+                    "Workbook B Value": dfB_common.iat[i, j]
+                })
+            diff_df = pd.DataFrame(diff_records)
+
+            # --- Write sheet-wise report ---
+            sheet_name_safe = f"{sheetA_name[:28]}_Diff"
+            if diff_df.empty:
+                pd.DataFrame([{"Status": "No Differences Found"}]).to_excel(writer, index=False, sheet_name=sheet_name_safe)
+            else:
+                diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
+                worksheet = writer.sheets[sheet_name_safe]
+                worksheet.set_column("A:G", 25)
+                for r in range(1, len(diff_df) + 1):
+                    worksheet.set_row(r, None, highlight_fmt)
+
+            # store sheet summary info
+            sheet_summaries.append({
+                "Sheet A": sheetA_name,
+                "Sheet B": sheetB_name,
+                "Extra Columns in A": ", ".join(extra_cols_A) if extra_cols_A else "None",
+                "Extra Columns in B": ", ".join(extra_cols_B) if extra_cols_B else "None",
+                "Row Difference": len(dfA) - len(dfB),
+                "Changed Cells": num_changes,
+                "Drilldown Sheet": sheet_name_safe
             })
 
-            for _, row in edited_mapping.iterrows():
-                if row["Skip Comparison"]:
-                    st.info(f"⏭️ Skipping sheet '{row['Workbook A Sheet']}'")
-                    continue
+        # --- ✅ Summary Sheet (as FIRST TAB with hyperlinks) ---
+        summary_df = pd.DataFrame(sheet_summaries)
+        summary_df.insert(0, "Drilldown Link", [
+            f'=HYPERLINK("#{s["Drilldown Sheet"]}!A1","Go to Diff")' for _, s in summary_df.iterrows()
+        ])
 
-                sheetA_name = row["Workbook A Sheet"]
-                sheetB_name = row["Workbook B Sheet"]
+        summary_df.to_excel(writer, index=False, sheet_name="Summary", startrow=0)
 
-                if sheetB_name not in sheetsB:
-                    st.warning(f"⚠️ Sheet '{sheetB_name}' not found in Workbook B — skipped")
-                    continue
+        # Move "Summary" sheet to first position
+        worksheet_summary = writer.sheets["Summary"]
+        worksheet_summary.set_column("A:H", 25)
 
-                dfA = sheetsA[sheetA_name].fillna("")
-                dfB = sheetsB[sheetB_name].fillna("")
+        # Apply hyperlink formatting
+        link_fmt = workbook.add_format({'font_color': 'blue', 'underline': 1})
+        for idx in range(1, len(summary_df) + 1):
+            worksheet_summary.write_formula(f"A{idx+1}", summary_df.iloc[idx-1, 0], link_fmt)
 
-                # Align column sets
-                common_cols = sorted(list(set(dfA.columns).intersection(set(dfB.columns))))
-                extra_cols_A = list(set(dfA.columns) - set(dfB.columns))
-                extra_cols_B = list(set(dfB.columns) - set(dfA.columns))
+    # --- Step 5: Display & Download ---
+    st.subheader("📋 Comparison Summary")
+    st.dataframe(summary_df.drop(columns=["Drilldown Link", "Drilldown Sheet"], errors="ignore"))
 
-                # Align row count
-                max_rows = max(len(dfA), len(dfB))
-                dfA = dfA.reindex(range(max_rows)).fillna("")
-                dfB = dfB.reindex(range(max_rows)).fillna("")
-
-                dfA_common = dfA[common_cols].reset_index(drop=True)
-                dfB_common = dfB[common_cols].reset_index(drop=True)
-
-                # Compare cell values
-                diff_mask = dfA_common.ne(dfB_common)
-                changed_cells = np.where(diff_mask)
-                num_changes = len(changed_cells[0])
-
-                # --- ✅ Build difference report (Row + Column numbers + Excel letters) ---
-                diff_records = []
-                for i, j in zip(*changed_cells):
-                    col_name = common_cols[j]
-
-                    # Actual column number in original DataFrame
-                    try:
-                        col_pos = dfA.columns.get_loc(col_name) + 1
-                    except Exception:
-                        col_pos = j + 1  # fallback
-
-                    excel_row_num = i + 2  # +2: Excel row 1 is header, index starts from 0
-                    col_letter = get_column_letter(col_pos)
-
-                    diff_records.append({
-                        "Row Number": excel_row_num,
-                        "Column Number": col_pos,
-                        "Column Letter": col_letter,
-                        "Column Name": col_name,
-                        "Workbook A Value": dfA_common.iat[i, j],
-                        "Workbook B Value": dfB_common.iat[i, j]
-                    })
-                diff_df = pd.DataFrame(diff_records)
-
-                # --- Write sheet-wise report ---
-                sheet_name_safe = f"{sheetA_name[:28]}_Diff"
-                if diff_df.empty:
-                    pd.DataFrame([{"Status": "No Differences Found"}]).to_excel(writer, index=False, sheet_name=sheet_name_safe)
-                else:
-                    diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
-                    worksheet = writer.sheets[sheet_name_safe]
-                    worksheet.set_column("A:G", 25)
-                    for r in range(1, len(diff_df) + 1):
-                        worksheet.set_row(r, None, highlight_fmt)
-
-                # --- Summary info ---
-                summary_rows.append({
-                    "Sheet A": sheetA_name,
-                    "Sheet B": sheetB_name,
-                    "Extra Columns in A": ", ".join(extra_cols_A) if extra_cols_A else "None",
-                    "Extra Columns in B": ", ".join(extra_cols_B) if extra_cols_B else "None",
-                    "Row Difference": len(dfA) - len(dfB),
-                    "Changed Cells": num_changes
-                })
-
-            # --- Summary Sheet ---
-            summary_df = pd.DataFrame(summary_rows)
-            summary_df.to_excel(writer, index=False, sheet_name="Summary")
-
-        # --- Step 5: Display & Download ---
-        st.subheader("📋 Comparison Summary")
-        st.dataframe(summary_df)
-
-        st.download_button(
-            label="📥 Download Highlighted Comparison Report",
-            data=excel_output.getvalue(),
-            file_name=base_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-else:
-    st.info("⬆️ Please upload both workbooks to begin.")
+    st.download_button(
+        label="📥 Download Highlighted Comparison Report",
+        data=excel_output.getvalue(),
+        file_name=base_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
