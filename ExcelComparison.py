@@ -108,8 +108,8 @@ def compare_sheets(df_left, df_right, sheet_name, max_diffs=1000):
     for h in list(common_hashes):
         li = left_map[h]
         ri = right_map[h]
-        left_row = df_left.iloc[li].reindex(index=[0], columns=all_cols, fill_value=np.nan).iloc[0]
-        right_row = df_right.iloc[ri].reindex(index=[0], columns=all_cols, fill_value=np.nan).iloc[0]
+        left_row = df_left.iloc[[li]].reindex(columns=all_cols, fill_value=np.nan).iloc[0]
+        right_row = df_right.iloc[[ri]].reindex(columns=all_cols, fill_value=np.nan).iloc[0]
         for col in all_cols:
             lv = left_row.get(col, np.nan)
             rv = right_row.get(col, np.nan)
@@ -129,14 +129,14 @@ def compare_sheets(df_left, df_right, sheet_name, max_diffs=1000):
         # removed rows
         for h in list(removed_hashes):
             li = left_map[h]
-            left_row = df_left.iloc[li].reindex(columns=all_cols, fill_value=np.nan)
+            left_row = df_left.iloc[[li]].reindex(columns=all_cols, fill_value=np.nan)
             records.append({"row_hash":h, "row_index_left":li, "row_index_right":np.nan, "col": "<ROW_REMOVED>", "left_value": " | ".join(left_row.fillna("").astype(str).tolist()), "right_value": "", "status":"left_only"})
             if len(records) >= max_diffs:
                 break
     if cell_changes + len(records) < max_diffs:
         for h in list(added_hashes):
             ri = right_map[h]
-            right_row = df_right.iloc[ri].reindex(columns=all_cols, fill_value=np.nan)
+            right_row = df_right.iloc[[ri]].reindex(columns=all_cols, fill_value=np.nan)
             records.append({"row_hash":h, "row_index_left":np.nan, "row_index_right":ri, "col": "<ROW_ADDED>", "left_value": "", "right_value": " | ".join(right_row.fillna("").astype(str).tolist()), "status":"right_only"})
             if len(records) >= max_diffs:
                 break
