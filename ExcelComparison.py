@@ -17,7 +17,15 @@ file2 = st.sidebar.file_uploader("Upload Workbook B", type=["xlsx", "xls"], key=
 @st.cache_data
 def read_excel_sheets(uploaded_file):
     try:
-        return pd.read_excel(uploaded_file, sheet_name=None, dtype=str)
+        df_dict = pd.read_excel(uploaded_file, sheet_name=None, dtype=str, header=0)
+        cleaned = {}
+        for sheet_name, df in df_dict.items():
+            df.columns = [
+                c if not str(c).startswith("Unnamed") else f"Unnamed_{i+1}"
+                for i, c in enumerate(df.columns)
+            ]
+            cleaned[sheet_name] = df
+        return cleaned
     except Exception as e:
         st.error(f"Error reading Excel file: {e}")
         return {}
@@ -98,12 +106,13 @@ if file1 and file2:
                 changed_cells = np.where(diff_mask)
                 num_changes = len(changed_cells[0])
 
-                # Build difference report
+                # Build difference report (Row + Column numbers are 1-based)
                 diff_records = []
                 for i, j in zip(*changed_cells):
                     diff_records.append({
-                        "Row": i + 1,
-                        "Column": common_cols[j],
+                        "Row Number": i + 2,  # +2 because Excel rows start at 1, header occupies first
+                        "Column Number": j + 1,
+                        "Column Name": common_cols[j],
                         "Workbook A Value": dfA_common.iat[i, j],
                         "Workbook B Value": dfB_common.iat[i, j]
                     })
@@ -116,7 +125,7 @@ if file1 and file2:
                 else:
                     diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
                     worksheet = writer.sheets[sheet_name_safe]
-                    worksheet.set_column("A:D", 25)
+                    worksheet.set_column("A:F", 25)
                     for r in range(1, len(diff_df) + 1):
                         worksheet.set_row(r, None, highlight_fmt)
 
