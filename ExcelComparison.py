@@ -57,16 +57,15 @@ if file1 and file2:
     st.subheader("🔗 Auto-Mapping of Sheets")
     edited_mapping = st.data_editor(mapping_df, num_rows="dynamic", key="map_editor")
 
-    # --- Step 4: Comparison Logic (fixed: summary-first + valid drilldown links) ---
+    # --- Step 4: Comparison Logic (Summary-first + valid links + Back to Summary) ---
 if st.button("🚀 Run Comparison"):
     summary_rows = []
     diff_frames = {}   # store per-sheet diff DataFrames to write AFTER summary
     excel_output = io.BytesIO()
 
-    # Build output file name
     base_filename = f"{file1_name}_comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
-    # --- First pass: compute diffs and keep in memory (do not write yet) ---
+    # --- First pass: compute diffs and keep in memory ---
     for _, row in edited_mapping.iterrows():
         if row["Skip Comparison"]:
             st.info(f"⏭️ Skipping sheet '{row['Workbook A Sheet']}'")
@@ -104,7 +103,6 @@ if st.button("🚀 Run Comparison"):
         diff_records = []
         for i, j in zip(*changed_cells):
             col_name = common_cols[j]
-            # actual column number in original dfA (1-based)
             try:
                 col_pos = dfA.columns.get_loc(col_name) + 1
             except Exception:
@@ -121,12 +119,11 @@ if st.button("🚀 Run Comparison"):
             })
         diff_df = pd.DataFrame(diff_records)
 
-        # sanitize sheet name for Excel (replace invalid chars, limit to 31 chars)
+        # Sanitize sheet name
         def sanitize_sheet_name(name):
             invalid = ['\\', '/', '*', '[', ']', ':', '?']
             for ch in invalid:
                 name = name.replace(ch, "_")
-            # trim
             name = name.strip()
             if len(name) == 0:
                 name = "Sheet"
@@ -135,18 +132,14 @@ if st.button("🚀 Run Comparison"):
             return name
 
         sheet_name_safe = sanitize_sheet_name(f"{sheetA_name}_Diff")
-
-        # ensure unique sheet_name_safe (avoid collisions)
         base_safe = sheet_name_safe
         idx = 1
         while sheet_name_safe in diff_frames:
             sheet_name_safe = f"{base_safe[:25]}_{idx}"
             idx += 1
 
-        # store
         diff_frames[sheet_name_safe] = diff_df
 
-        # collect summary metadata (include target safe sheet name for hyperlink)
         summary_rows.append({
             "Sheet A": sheetA_name,
             "Sheet B": sheetB_name,
@@ -157,50 +150,48 @@ if st.button("🚀 Run Comparison"):
             "Drilldown Sheet": sheet_name_safe
         })
 
-    # --- Write Excel: Summary first (as first tab), then detail tabs ---
+    # --- Write Excel file: Summary first, then details ---
     with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
         workbook = writer.book
         link_fmt = workbook.add_format({'font_color': 'blue', 'underline': 1})
         highlight_fmt = workbook.add_format({"bg_color": "#FFF59D", "font_color": "#000000"})
 
-        # Prepare summary DataFrame (we will write it starting at column B so we can put hyperlinks in A)
         summary_df_full = pd.DataFrame(summary_rows)
-        # columns to show in summary (exclude Drilldown Sheet when displaying since hyperlink will be left)
         display_cols = ["Sheet A", "Sheet B", "Extra Columns in A", "Extra Columns in B", "Row Difference", "Changed Cells"]
         summary_display = summary_df_full[display_cols]
 
-        # Write the summary starting at column B (startcol=1) so column A is for hyperlinks
+        # Write summary
         summary_display.to_excel(writer, sheet_name="Summary", index=False, startcol=1)
         worksheet_summary = writer.sheets["Summary"]
-        worksheet_summary.set_column(0, 0, 18)  # column A width for hyperlink
-        worksheet_summary.set_column(1, len(display_cols), 25)  # other columns
-
-        # write header for hyperlink column
+        worksheet_summary.set_column(0, 0, 18)
+        worksheet_summary.set_column(1, len(display_cols), 25)
         worksheet_summary.write(0, 0, "Drilldown")
 
-        # write hyperlink formulas into column A (row-by-row)
+        # Fix Drilldown column to show text "Go to Diff"
         for idx, rec in enumerate(summary_df_full.itertuples(index=False), start=1):
-            drill_sheet = rec._asdict().get("Drilldown Sheet") if isinstance(rec, pd.Series) else rec[-1] if "Drilldown Sheet" in summary_df_full.columns else summary_df_full.iloc[idx-1]["Drilldown Sheet"]
-            # ensure sheet name is single-quoted in case it has spaces/special chars
+            drill_sheet = getattr(rec, "Drilldown Sheet", summary_df_full.iloc[idx-1]["Drilldown Sheet"])
             formula = f'=HYPERLINK("#\'{drill_sheet}\'!A1","Go to Diff")'
             worksheet_summary.write_formula(idx, 0, formula, link_fmt)
 
-        # Now write each detail sheet
+        # --- Write detail sheets ---
         for sheet_name_safe, diff_df in diff_frames.items():
-            if diff_df is None or diff_df.shape[0] == 0:
+            if diff_df is None or diff_df.empty:
                 pd.DataFrame([{"Status": "No Differences Found"}]).to_excel(writer, index=False, sheet_name=sheet_name_safe)
             else:
-                diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
+                diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe, startrow=2)
                 worksheet = writer.sheets[sheet_name_safe]
-                # auto width and highlight all data rows for visibility
+
+                # Add "Back to Summary" link at A1
+                back_link = '=HYPERLINK("#Summary!A1","Back to Summary")'
+                worksheet.write_formula(0, 0, back_link, link_fmt)
+
+                # Formatting
                 worksheet.set_column(0, diff_df.shape[1]-1, 20)
-                for r in range(1, len(diff_df) + 1):
+                for r in range(3, len(diff_df) + 3):
                     worksheet.set_row(r, None, highlight_fmt)
 
     excel_output.seek(0)
 
-    # --- Step 5: Display & Download ---
-    # show summary table in Streamlit (without Drilldown Sheet column)
     st.subheader("📋 Comparison Summary")
     st.dataframe(pd.DataFrame(summary_rows).drop(columns=["Drilldown Sheet"], errors="ignore"))
 
