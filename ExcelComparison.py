@@ -3,10 +3,12 @@ import pandas as pd
 import numpy as np
 from difflib import get_close_matches
 import io
+import os
+from datetime import datetime
 
 st.set_page_config(page_title="GC Excel Comparator", layout="wide")
 
-st.title("📊 GC Excel Comparator — Auto-Mapping + Cell-Level Differences")
+st.title("📊 GC Excel Comparator — Auto-Mapping + Cell-Level Differences + Highlights")
 
 # --- Step 1: Upload Excel Files ---
 file1 = st.sidebar.file_uploader("Upload Workbook A", type=["xlsx", "xls"], key="f1")
@@ -24,7 +26,11 @@ def read_excel_sheets(uploaded_file):
 if file1 and file2:
     sheetsA = read_excel_sheets(file1)
     sheetsB = read_excel_sheets(file2)
-    st.success(f"✅ Loaded {len(sheetsA)} sheets from Workbook A and {len(sheetsB)} from Workbook B")
+
+    file1_name = os.path.splitext(file1.name)[0]
+    file2_name = os.path.splitext(file2.name)[0]
+
+    st.success(f"✅ Loaded {len(sheetsA)} sheets from **{file1.name}** and {len(sheetsB)} from **{file2.name}**")
 
     # --- Step 3: Auto-Map Sheets ---
     mapping_data = []
@@ -47,7 +53,18 @@ if file1 and file2:
         summary_rows = []
         excel_output = io.BytesIO()
 
+        # Build output file name
+        base_filename = f"{file1_name}_comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
         with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
+            workbook = writer.book
+
+            # Define highlight format
+            highlight_fmt = workbook.add_format({
+                "bg_color": "#FFF59D",  # light yellow
+                "font_color": "#000000"
+            })
+
             for _, row in edited_mapping.iterrows():
                 if row["Skip Comparison"]:
                     st.info(f"⏭️ Skipping sheet '{row['Workbook A Sheet']}'")
@@ -68,35 +85,42 @@ if file1 and file2:
                 extra_cols_A = list(set(dfA.columns) - set(dfB.columns))
                 extra_cols_B = list(set(dfB.columns) - set(dfA.columns))
 
-                # Truncate to same row count for cell-by-cell comparison
-                min_rows = min(len(dfA), len(dfB))
-                dfA_common = dfA[common_cols].head(min_rows).reset_index(drop=True)
-                dfB_common = dfB[common_cols].head(min_rows).reset_index(drop=True)
+                # Align row count
+                max_rows = max(len(dfA), len(dfB))
+                dfA = dfA.reindex(range(max_rows)).fillna("")
+                dfB = dfB.reindex(range(max_rows)).fillna("")
+
+                dfA_common = dfA[common_cols].reset_index(drop=True)
+                dfB_common = dfB[common_cols].reset_index(drop=True)
 
                 # Compare cell values
                 diff_mask = dfA_common.ne(dfB_common)
                 changed_cells = np.where(diff_mask)
                 num_changes = len(changed_cells[0])
 
-                # Build diff report
+                # Build difference report
                 diff_records = []
                 for i, j in zip(*changed_cells):
                     diff_records.append({
                         "Row": i + 1,
                         "Column": common_cols[j],
-                        "Value in Workbook A": dfA_common.iat[i, j],
-                        "Value in Workbook B": dfB_common.iat[i, j]
+                        "Workbook A Value": dfA_common.iat[i, j],
+                        "Workbook B Value": dfB_common.iat[i, j]
                     })
                 diff_df = pd.DataFrame(diff_records)
 
-                # Write per-sheet diff to Excel
+                # Write sheet-wise report
                 sheet_name_safe = f"{sheetA_name[:28]}_Diff"
-                if not diff_df.empty:
-                    diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
-                else:
+                if diff_df.empty:
                     pd.DataFrame([{"Status": "No Differences Found"}]).to_excel(writer, index=False, sheet_name=sheet_name_safe)
+                else:
+                    diff_df.to_excel(writer, index=False, sheet_name=sheet_name_safe)
+                    worksheet = writer.sheets[sheet_name_safe]
+                    worksheet.set_column("A:D", 25)
+                    for r in range(1, len(diff_df) + 1):
+                        worksheet.set_row(r, None, highlight_fmt)
 
-                # Collect summary info
+                # Summary info
                 summary_rows.append({
                     "Sheet A": sheetA_name,
                     "Sheet B": sheetB_name,
@@ -106,18 +130,18 @@ if file1 and file2:
                     "Changed Cells": num_changes
                 })
 
-            # --- Summary Sheet ---
+            # Write Summary Sheet
             summary_df = pd.DataFrame(summary_rows)
             summary_df.to_excel(writer, index=False, sheet_name="Summary")
 
+        # --- Step 5: Display and Download ---
         st.subheader("📋 Comparison Summary")
         st.dataframe(summary_df)
 
-        # --- Step 5: Download Report ---
         st.download_button(
-            label="📥 Download Detailed Comparison Report",
+            label="📥 Download Highlighted Comparison Report",
             data=excel_output.getvalue(),
-            file_name=f"GC_Comparison_Report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            file_name=base_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 else:
