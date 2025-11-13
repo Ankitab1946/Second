@@ -13,17 +13,16 @@ st.set_page_config(page_title="Financial Statement Extractor", layout="wide")
 # =========================================================
 def to_excel(statement_dict):
     output = BytesIO()
-    writer = pd.ExcelWriter(output, engine='openpyxl')
 
-    for statement, tables in statement_dict.items():
-        if len(tables) == 0:
-            continue
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for statement, tables in statement_dict.items():
+            if len(tables) == 0:
+                continue
 
-        for i, df in enumerate(tables, start=1):
-            sheet_name = f"{statement[:28]}_{i}"
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
+            for i, df in enumerate(tables, start=1):
+                sheet_name = f"{statement[:28]}_{i}"
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
 
-    writer.save()
     output.seek(0)
     return output
 
@@ -54,6 +53,51 @@ def deduplicate_columns(columns):
 
 
 # =========================================================
+#  INTELLIGENT HEADER DETECTION FOR FINANCIAL TABLES
+# =========================================================
+def detect_header_row(df):
+    """
+    Detects header row by:
+    - Avoiding rows with high numeric ratio (data rows)
+    - Preferring rows with header keywords
+    - Considering fullness as a fallback
+    """
+
+    header_keywords = [
+        "particular", "description", "item", "notes", 
+        "note", "assets", "liabilities", "equity",
+        "year", "fy", "statement", "amount", "total"
+    ]
+
+    best_row = None
+    best_score = -9999
+
+    for idx, row in df.iterrows():
+        row_text = " ".join(str(x).lower() for x in row.values)
+
+        # Skip rows that are mostly numeric → data rows
+        numeric_ratio = row.apply(lambda x: str(x).replace(".", "", 1).isdigit()).mean()
+        if numeric_ratio > 0.5:
+            continue
+
+        # Score header keywords
+        score = sum(1 for kw in header_keywords if kw in row_text)
+
+        # More non-nulls is better
+        score += row.notnull().sum()
+
+        if score > best_score:
+            best_score = score
+            best_row = idx
+
+    # Fallback to fullness method
+    if best_row is None:
+        best_row = df.notnull().mean(axis=1).idxmax()
+
+    return best_row
+
+
+# =========================================================
 #  Clean & Normalize Extracted Tables
 # =========================================================
 def clean_table(df):
@@ -63,16 +107,17 @@ def clean_table(df):
     if df.empty:
         return df
 
-    # Auto-determine header
-    header_row = df.notnull().mean(axis=1).idxmax()
+    # NEW intelligent header detection
+    header_row = detect_header_row(df)
 
     df.columns = df.iloc[header_row]
 
-    # Deduplicate column names for safety
+    # Deduplicate & clean columns
     df.columns = deduplicate_columns(df.columns)
-
-    df = df[header_row + 1:].reset_index(drop=True)
     df.columns = [str(c).strip() for c in df.columns]
+
+    # Data starts after header
+    df = df[header_row + 1:].reset_index(drop=True)
 
     return df
 
@@ -95,16 +140,9 @@ def read_excel_file(file_path, selected_sheets=None):
         if df_raw.empty:
             continue
 
-        header_row = df_raw.notnull().mean(axis=1).idxmax()
-        df = xl.parse(sheet, header=header_row)
-
-        # Forward fill headers safely
-        df.columns = pd.Series(df.columns).fillna(method="ffill")
-
-        # Deduplicate column names
-        df.columns = deduplicate_columns(df.columns)
-
-        tables.append(df)
+        df = clean_table(df_raw)
+        if not df.empty:
+            tables.append(df)
 
     return tables, xl.sheet_names
 
@@ -115,7 +153,7 @@ def read_excel_file(file_path, selected_sheets=None):
 def read_pdf_file(file_path):
     all_tables = []
 
-    # Camelot extraction (digital PDFs)
+    # Camelot (digital PDFs)
     try:
         camelot_tables = camelot.read_pdf(file_path, pages="all", flavor="lattice")
         for t in camelot_tables:
@@ -125,7 +163,7 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # pdfplumber extraction
+    # pdfplumber
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -137,7 +175,7 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # Tabula extraction
+    # Tabula
     try:
         tab_tables = tabula.read_pdf(file_path, pages="all", multiple_tables=True)
         for t in tab_tables:
@@ -155,14 +193,14 @@ def read_pdf_file(file_path):
 # =========================================================
 def classify_statement(df):
     """
-    Simple keyword-based classifier (can be upgraded to AI version).
+    Simple keyword-based classifier (fast & effective for financial tables).
     """
     text = " ".join(str(x).lower() for x in df.columns.tolist())
     text += " " + " ".join(
         df.astype(str).fillna("").apply(lambda x: " ".join(x), axis=1).tolist()
     )
 
-    if any(x in text for x in ["balance sheet", "equity", "assets", "liabilities"]):
+    if any(x in text for x in ["balance sheet", "assets", "liabilities", "equity"]):
         return "Balance Sheet"
 
     if any(x in text for x in ["income", "revenue", "profit", "loss", "p&l"]):
@@ -177,11 +215,11 @@ def classify_statement(df):
 # =========================================================
 #  STREAMLIT UI
 # =========================================================
-st.title("📊 Financial Statement Extractor")
+st.title("📊 Intelligent Financial Statement Extractor (PDF / Excel)")
 st.write(
-    "Uploads PDFs or Excel files, extracts **all tables**, cleans them, "
-    "handles **duplicate headers**, allows **sheet selection**, and "
-    "classifies the tables into Balance Sheet, Income Statement, Cash Flow, or Other."
+    "Extract **all tables**, detect real headers (avoid data rows as header), "
+    "fix duplicate headers, allow sheet selection, and classify tables into "
+    "Balance Sheet, Income Statement, Cash Flow, or Other."
 )
 
 uploaded_file = st.file_uploader("Upload PDF or Excel file", type=["pdf", "xlsx", "xls"])
@@ -193,25 +231,24 @@ if uploaded_file:
         f.write(uploaded_file.getbuffer())
 
     ext = os.path.splitext(file_path)[1].lower()
-
     selected_sheets = None
 
-    # Excel sheet selection UI
+    # Excel → show sheet selection
     if ext in [".xlsx", ".xls"]:
         xl = pd.ExcelFile(file_path, engine="openpyxl")
 
-        st.subheader("📄 Select sheets to extract:")
+        st.subheader("📄 Select tabs to extract:")
         selected_sheets = st.multiselect(
             "Choose one or more sheets",
             options=xl.sheet_names,
             default=xl.sheet_names
         )
 
-        if len(selected_sheets) == 0:
+        if not selected_sheets:
             st.warning("Please select at least one tab.")
             st.stop()
 
-    st.info("⏳ Extracting tables... please wait.")
+    st.info("⏳ Extracting tables using intelligent header detection...")
 
     # Extract tables
     if ext in [".xlsx", ".xls"]:
@@ -219,9 +256,9 @@ if uploaded_file:
     else:
         tables = read_pdf_file(file_path)
 
-    st.success(f"✔ Extracted {len(tables)} tables!")
+    st.success(f"✔ Extracted {len(tables)} tables")
 
-    # Classification buckets
+    # Classification groups
     classified_tables = {
         "Balance Sheet": [],
         "Income Statement": [],
@@ -229,9 +266,9 @@ if uploaded_file:
         "Other": []
     }
 
-    # Display and classify all tables
+    # Display & classify
     for idx, df in enumerate(tables, start=1):
-        st.markdown(f"### 🔍 Table {idx}")
+        st.subheader(f"🔍 Table {idx}")
         st.dataframe(df, use_container_width=True)
 
         st_type = classify_statement(df)
@@ -239,15 +276,14 @@ if uploaded_file:
 
     # Summary
     st.markdown("## 📌 Classification Summary")
-    for name, group in classified_tables.items():
-        st.write(f"**{name}: {len(group)} tables**")
+    for k, v in classified_tables.items():
+        st.write(f"**{k}: {len(v)} table(s)**")
 
-    # Download button
+    # Download
     excel_file = to_excel(classified_tables)
-
     st.download_button(
-        label="📥 Download Extracted & Classified Tables (Excel)",
+        label="📥 Download Classified Tables (Excel)",
         data=excel_file,
-        file_name="Extracted_Financial_Statements.xlsx",
+        file_name="Financial_Statements_Extracted.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
