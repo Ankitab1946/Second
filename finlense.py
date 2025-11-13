@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import streamlit as st
 import pandas as pd
 import camelot
@@ -17,8 +18,6 @@ def to_excel(statement_dict):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for statement, tables in statement_dict.items():
-            if len(tables) == 0:
-                continue
             for i, df in enumerate(tables, start=1):
                 sheet_name = f"{statement[:28]}_{i}"
                 df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -27,12 +26,12 @@ def to_excel(statement_dict):
 
 
 # =====================================================================
-# CLEAN DUPLICATE COLUMN NAMES
+# DEDUPLICATE COLUMNS
 # =====================================================================
-def deduplicate_columns(columns):
+def deduplicate_columns(cols):
     new_cols, count = [], {}
-    for col in columns:
-        col = "" if col is None else str(col).strip()
+    for col in cols:
+        col = str(col).strip()
         if col not in count:
             count[col] = 0
             new_cols.append(col)
@@ -43,105 +42,88 @@ def deduplicate_columns(columns):
 
 
 # =====================================================================
-# HEADER DETECTION LOGIC
+# MULTI-ROW HEADER DETECTION
 # =====================================================================
-def detect_header_row(df):
-    header_keywords = [
-        "particular", "description", "item", "notes", "note",
-        "assets", "liabilities", "equity", "year", "fy",
-        "statement", "amount", "total", "revenue", "income", "cash"
-    ]
-
-    best_row = None
-    best_score = -999999
-
+def detect_multirow_header(df):
+    header_rows = []
     for idx, row in df.iterrows():
-        row_text = " ".join(str(x).lower() for x in row.values if pd.notna(x))
+        # Measure properties
+        non_empty_ratio = row.notna().mean()
+        numeric_ratio = row.apply(lambda x: str(x).replace(",", "").replace(".", "", 1).lstrip("-").isdigit()).mean()
 
-        # skip numeric-heavy rows
-        numeric_ratio = row.apply(
-            lambda x: str(x).replace(",", "").replace(" ", "")
-            .replace("\u00A0", "").replace(".", "", 1)
-            .lstrip("-").isdigit()
-        ).mean()
+        # Header rows tend to be text-heavy, non-empty, low numeric
+        if non_empty_ratio >= 0.3 and numeric_ratio < 0.5:
+            header_rows.append(idx)
+        else:
+            break
 
-        if numeric_ratio > 0.5:
-            continue
-
-        # score keywords + non-null cells
-        score = sum(1 for kw in header_keywords if kw in row_text)
-        score += row.notnull().sum()
-
-        if score > best_score:
-            best_score = score
-            best_row = idx
-
-    if best_row is None:
-        best_row = df.notnull().mean(axis=1).idxmax()
-
-    return best_row
+    # If no header detected, default to first row
+    return header_rows if header_rows else [0]
 
 
 # =====================================================================
-# REMOVE EXCEL HIDDEN/NARROW-WIDTH COLUMNS
+# MULTI-ROW HEADER BUILDER
+# =====================================================================
+def build_multirow_header(df, header_rows):
+    headers = df.iloc[header_rows].astype(str).fillna("").applymap(lambda x: x.strip())
+
+    merged = []
+    for col in headers.T.values:
+        values = [v for v in col if v not in ["", "nan", "None", "NA"]]
+        merged.append("_".join(values) if values else "")
+
+    return deduplicate_columns(merged)
+
+
+# =====================================================================
+# REMOVE EXCEL BLANK-WIDTH COLUMNS
 # =====================================================================
 def remove_blank_width_columns(df, sheet_name, file_path):
-    if sheet_name is None or file_path is None:
-        return df
-
     try:
         wb = openpyxl.load_workbook(file_path, data_only=True)
         ws = wb[sheet_name]
 
-        # get column letters in order
         col_letters = [col[0].column_letter for col in ws.columns]
-        keep_indices = []
+        keep = []
 
         for i, col_letter in enumerate(col_letters):
             dim = ws.column_dimensions.get(col_letter)
-            width = None
+            width = dim.width if dim and dim.width is not None else ws.column_dimensions.defaultColWidth
 
-            if dim and dim.width is not None:
-                width = dim.width
-            else:
-                width = ws.column_dimensions.defaultColWidth
-
-            # remove narrow / blank columns (width <= 2)
+            # remove narrow-width columns (≤2)
             if width and width > 2:
-                keep_indices.append(i)
+                keep.append(i)
 
-        if keep_indices:
-            df = df.iloc[:, keep_indices]
-        return df
+        return df.iloc[:, keep]
+
     except:
         return df
 
 
 # =====================================================================
-# CLEAN NUMERIC CELLS (%, parentheses, n.a.)
+# CLEAN NUMERIC VALUE
 # =====================================================================
 def clean_numeric_value(x):
     if pd.isna(x):
         return pd.NA
 
-    s = str(x).strip()
-    s = s.replace("\u00A0", "").replace(",", "")
+    s = str(x).strip().replace("\u00A0", "").replace(",", "")
 
-    # convert (123) -> -123
+    # parentheses (123) → -123
     if re.fullmatch(r"\(\s*[\d\.]+\s*\)", s):
-        s = "-" + s.strip("()")
+        return float("-" + s.strip("()"))
 
-    # convert percentages
+    if s.lower() in ["n.a.", "na", "n.a", "-", ""]:
+        return pd.NA
+
+    # percent
     if s.endswith("%"):
         try:
             return float(s[:-1]) / 100
         except:
             return pd.NA
 
-    # "n.a", "na", "-" treated as NA
-    if s.lower() in ["n.a.", "na", "n.a", "-", ""]:
-        return pd.NA
-
+    # plain numeric
     try:
         return float(s)
     except:
@@ -149,99 +131,78 @@ def clean_numeric_value(x):
 
 
 # =====================================================================
-# CLEAN TABLE (CORE FUNCTION)
+# CLEAN TABLE
 # =====================================================================
 def clean_table(df, sheet_name=None, file_path=None):
-    # remove whitespace-like garbage
-    df = df.replace(["", " ", "\t", "\n", "\r", "\x00", "—", "–", "−"], pd.NA)
-
-    # drop fully empty rows/columns
+    df = df.replace(["", " ", "\t", "\n", "\r", "\x00", "—", "–"], pd.NA)
     df = df.dropna(axis=0, how="all")
     df = df.dropna(axis=1, how="all")
 
     if df.empty:
         return df
 
-    # detect header
-    header_row = detect_header_row(df)
-    raw_headers = df.iloc[header_row].fillna("").astype(str).str.strip()
+    # detect header rows
+    header_rows = detect_multirow_header(df)
 
-    # remove nan-looking headers
-    cleaned_headers = [
-        "" if re.fullmatch(r"(nan|nan_\d*|none)?", h, re.IGNORECASE) else h
-        for h in raw_headers
-    ]
+    # build merged header
+    merged_header = build_multirow_header(df, header_rows)
+    df.columns = merged_header
 
-    df.columns = deduplicate_columns(cleaned_headers)
-
-    # remove columns with blank header
+    # drop blank header columns
     df = df.loc[:, [c for c in df.columns if c.strip() != ""]]
 
-    # slice data rows
-    df = df[(header_row + 1):].reset_index(drop=True)
+    # drop header rows
+    df = df.iloc[max(header_rows) + 1:].reset_index(drop=True)
 
     # normalize cells
-    df = df.applymap(lambda x: pd.NA if pd.isna(x) or str(x).strip() in ["", "NaN"] else x)
+    df = df.applymap(lambda x: pd.NA if pd.isna(x) or str(x).strip() == "" else x)
 
-    # drop empty columns again
+    # remove all-empty columns
     df = df.dropna(axis=1, how="all")
 
     # remove blank-width Excel columns
     df = remove_blank_width_columns(df, sheet_name, file_path)
 
-    # last cleanup
-    df = df.dropna(axis=1, how="all")
-
-    # clean numeric cells (% + numbers)
+    # clean numeric values
     df = df.applymap(clean_numeric_value)
 
-    # drop all-empty columns
     df = df.dropna(axis=1, how="all")
-
     return df
 
 
 # =====================================================================
-# EXCEL READER
+# READ EXCEL
 # =====================================================================
 def read_excel_file(file_path, selected_sheets=None):
     xl = pd.ExcelFile(file_path, engine="openpyxl")
     tables = []
-    sheets_to_read = selected_sheets if selected_sheets else xl.sheet_names
 
-    for sheet in sheets_to_read:
+    for sheet in (selected_sheets or xl.sheet_names):
         df_raw = xl.parse(sheet, header=None, dtype=object)
         df_raw = df_raw.replace(["", " ", "\t", "\n"], pd.NA)
-        df_raw = df_raw.dropna(axis=0, how="all")
-        df_raw = df_raw.dropna(axis=1, how="all")
+        df_raw = df_raw.dropna(axis=0, how="all").dropna(axis=1, how="all")
 
-        if df_raw.empty:
-            continue
-
-        df = clean_table(df_raw, sheet_name=sheet, file_path=file_path)
-
-        if not df.empty:
-            tables.append(df)
+        if not df_raw.empty:
+            df = clean_table(df_raw, sheet_name=sheet, file_path=file_path)
+            if not df.empty:
+                tables.append(df)
 
     return tables
 
 
 # =====================================================================
-# PDF READER
+# READ PDF
 # =====================================================================
 def read_pdf_file(file_path):
     all_tables = []
 
-    # Camelot
     try:
-        tables = camelot.read_pdf(file_path, pages="all", flavor="lattice")
-        for t in tables:
+        for t in camelot.read_pdf(file_path, pages="all", flavor="lattice"):
             df = clean_table(t.df)
             if not df.empty: all_tables.append(df)
     except:
         pass
 
-    # pdfplumber
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -251,10 +212,8 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # Tabula
     try:
-        tables = tabula.read_pdf(file_path, pages="all", multiple_tables=True)
-        for t in tables:
+        for t in tabula.read_pdf(file_path, pages="all", multiple_tables=True):
             df = clean_table(t)
             if not df.empty: all_tables.append(df)
     except:
@@ -264,19 +223,17 @@ def read_pdf_file(file_path):
 
 
 # =====================================================================
-# CLASSIFY STATEMENT
+# CLASSIFY TABLE
 # =====================================================================
 def classify_statement(df):
-    text = " ".join(str(x).lower() for x in df.columns.tolist())
-    text += " " + " ".join(
-        df.astype(str).fillna("").apply(lambda x: " ".join(x), axis=1).tolist()
-    )
+    text = " ".join(str(x).lower() for x in df.columns)
+    text += " " + " ".join(df.astype(str).fillna("").apply(lambda r: " ".join(r), axis=1))
 
-    if any(x in text for x in ["balance sheet", "assets", "liabilities", "equity"]):
+    if any(k in text for k in ["balance sheet", "assets", "liabilities", "equity"]):
         return "Balance Sheet"
-    if any(x in text for x in ["income", "revenue", "profit", "loss", "p&l"]):
+    if any(k in text for k in ["income", "profit", "loss", "revenue"]):
         return "Income Statement"
-    if any(x in text for x in ["cash flow", "operating", "investing", "financing"]):
+    if any(k in text for k in ["cash flow", "operating", "investing", "financing"]):
         return "Cash Flow Statement"
     return "Other"
 
@@ -284,10 +241,10 @@ def classify_statement(df):
 # =====================================================================
 # STREAMLIT UI
 # =====================================================================
-st.title("📊 Intelligent Financial Statement Extractor (PDF / Excel)")
+st.title("📊 Advanced Financial Statement Extractor (PDF + Excel)")
 st.write("""
-This version removes **all blank-width Excel columns**, extracts **all tables**, 
-cleans headers, converts % and (123) formats, and classifies tables.
+Now supports **multi-row headers**, **blank-width column cleanup**, **numeric formatting cleanup**, 
+and classification of financial tables.
 """)
 
 uploaded_file = st.file_uploader("Upload PDF or Excel", type=["pdf", "xlsx", "xls"])
@@ -298,28 +255,29 @@ if uploaded_file:
         f.write(uploaded_file.getbuffer())
 
     ext = os.path.splitext(file_path)[1].lower()
-
     selected_sheets = None
+
     if ext in [".xlsx", ".xls"]:
         xl = pd.ExcelFile(file_path, engine="openpyxl")
-        st.subheader("Select Excel Sheets:")
+        st.subheader("Select Sheets")
         selected_sheets = st.multiselect(
-            "Sheets",
+            "Choose sheets:",
             options=xl.sheet_names,
             default=xl.sheet_names
         )
         if not selected_sheets:
-            st.warning("Please select at least one sheet")
+            st.warning("Select at least 1 sheet")
             st.stop()
 
-    st.info("Extracting tables... please wait")
+    st.info("Extracting tables...")
 
-    if ext in [".xlsx", ".xls"]:
-        tables = read_excel_file(file_path, selected_sheets)
-    else:
-        tables = read_pdf_file(file_path)
+    tables = (
+        read_excel_file(file_path, selected_sheets)
+        if ext in [".xlsx", ".xls"]
+        else read_pdf_file(file_path)
+    )
 
-    st.success(f"Extracted {len(tables)} table(s)")
+    st.success(f"{len(tables)} tables extracted")
 
     classified = {
         "Balance Sheet": [],
@@ -332,11 +290,12 @@ if uploaded_file:
         st.subheader(f"Table {i}")
         st.dataframe(df, use_container_width=True)
 
-        classified[classify_statement(df)].append(df)
+        category = classify_statement(df)
+        classified[category].append(df)
 
     st.markdown("## Summary")
     for k, v in classified.items():
-        st.write(f"**{k}: {len(v)} tables**")
+        st.write(f"**{k}: {len(v)} table(s)**")
 
     excel_file = to_excel(classified)
     st.download_button(
