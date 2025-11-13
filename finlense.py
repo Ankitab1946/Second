@@ -19,7 +19,6 @@ def to_excel(statement_dict):
         if len(tables) == 0:
             continue
 
-        # Each table becomes its own sheet
         for i, df in enumerate(tables, start=1):
             sheet_name = f"{statement[:28]}_{i}"
             df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -27,6 +26,17 @@ def to_excel(statement_dict):
     writer.save()
     output.seek(0)
     return output
+
+
+# ---------------------------------------------------------
+# Deduplicate column names safely
+# ---------------------------------------------------------
+def deduplicate_columns(columns):
+    """
+    Converts duplicate column names:
+    ['Trust Fund', 'Trust Fund'] → ['Trust Fund', 'Trust Fund.1']
+    """
+    return pd.io.parsers.ParserBase({'names': columns})._maybe_dedup_names(columns)
 
 
 # ---------------------------------------------------------
@@ -43,9 +53,14 @@ def clean_table(df):
     header_row = df.notnull().mean(axis=1).idxmax()
 
     df.columns = df.iloc[header_row]
+
+    # FIX: allow duplicate column names
+    df.columns = deduplicate_columns(df.columns)
+
     df = df[header_row + 1:]
 
     df.reset_index(drop=True, inplace=True)
+
     df.columns = [str(c).strip() for c in df.columns]
 
     return df
@@ -72,8 +87,10 @@ def read_excel_file(file_path, selected_sheets=None):
         header_row = df_raw.notnull().mean(axis=1).idxmax()
         df = xl.parse(sheet, header=header_row)
 
-        # FIX: fillna for header must be done via Series
         df.columns = pd.Series(df.columns).fillna(method="ffill")
+
+        # FIX: dedupe column names
+        df.columns = deduplicate_columns(df.columns)
 
         tables.append(df)
 
@@ -86,7 +103,7 @@ def read_excel_file(file_path, selected_sheets=None):
 def read_pdf_file(file_path):
     all_tables = []
 
-    # Method 1 — Camelot for digital PDFs
+    # Camelot (best for digital PDFs)
     try:
         camelot_tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
         for t in camelot_tables:
@@ -96,7 +113,7 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # Method 2 — pdfplumber
+    # pdfplumber
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
@@ -108,7 +125,7 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # Method 3 — Tabula
+    # Tabula
     try:
         tab_tables = tabula.read_pdf(file_path, pages="all", multiple_tables=True)
         for t in tab_tables:
@@ -145,10 +162,10 @@ def classify_statement(df):
 # ---------------------------------------------------------
 # STREAMLIT UI
 # ---------------------------------------------------------
-st.title("📊 Financial Statement Extractor (Multi-Table + Sheet Selection)")
+st.title("📊 Financial Statement Extractor (Multi-Table + Sheet Selection + Duplicate Columns Safe)")
 st.write(
-    "Upload PDF or Excel files. This app extracts **ALL tables**, cleans them, and classifies them into "
-    "**Balance Sheet**, **Income Statement**, **Cash Flow Statement**, or **Other**."
+    "Upload PDF or Excel files. This app extracts **all tables**, cleans them, handles **duplicate headers**, "
+    "and classifies them into **Balance Sheet**, **Income Statement**, **Cash Flow Statement**, or **Other**."
 )
 
 uploaded_file = st.file_uploader("Upload PDF or Excel", type=["pdf", "xlsx", "xls"])
@@ -177,7 +194,7 @@ if uploaded_file:
             st.warning("Please select at least one sheet to continue.")
             st.stop()
 
-    st.info("⏳ Extracting and classifying tables...")
+    st.info("⏳ Extracting and classifying tables... please wait...")
 
     # Extract tables
     if ext in [".xlsx", ".xls"]:
@@ -206,7 +223,7 @@ if uploaded_file:
     # Summary
     st.markdown("## 📌 Classification Summary")
     for k, v in classified_tables.items():
-        st.write(f"**{k}**: {len(v)} tables detected")
+        st.write(f"**{k}**: {len(v)} tables")
 
     # Download button
     excel_file = to_excel(classified_tables)
