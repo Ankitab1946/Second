@@ -64,18 +64,18 @@ def detect_header_row(df):
     """
 
     header_keywords = [
-        "particular", "description", "item", "notes", 
+        "particular", "description", "item", "notes",
         "note", "assets", "liabilities", "equity",
         "year", "fy", "statement", "amount", "total"
     ]
 
     best_row = None
-    best_score = -9999
+    best_score = -999999
 
     for idx, row in df.iterrows():
         row_text = " ".join(str(x).lower() for x in row.values)
 
-        # Skip rows that are mostly numeric → data rows
+        # Skip numeric-heavy rows → data rows
         numeric_ratio = row.apply(lambda x: str(x).replace(".", "", 1).isdigit()).mean()
         if numeric_ratio > 0.5:
             continue
@@ -83,7 +83,7 @@ def detect_header_row(df):
         # Score header keywords
         score = sum(1 for kw in header_keywords if kw in row_text)
 
-        # More non-nulls is better
+        # Bonus for non-null count
         score += row.notnull().sum()
 
         if score > best_score:
@@ -98,9 +98,10 @@ def detect_header_row(df):
 
 
 # =========================================================
-#  Clean & Normalize Extracted Tables
+#  Clean & Normalize Extracted Tables + Remove NaN columns
 # =========================================================
 def clean_table(df):
+    # Remove completely empty rows/columns first
     df.dropna(axis=0, how="all", inplace=True)
     df.dropna(axis=1, how="all", inplace=True)
 
@@ -111,13 +112,17 @@ def clean_table(df):
     header_row = detect_header_row(df)
 
     df.columns = df.iloc[header_row]
-
-    # Deduplicate & clean columns
     df.columns = deduplicate_columns(df.columns)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Data starts after header
+    # Remove NaN columns (global request)
+    df = df.dropna(axis=1, how="all")
+
+    # Get data rows
     df = df[header_row + 1:].reset_index(drop=True)
+
+    # Remove NaN columns again after slicing
+    df = df.dropna(axis=1, how="all")
 
     return df
 
@@ -134,12 +139,14 @@ def read_excel_file(file_path, selected_sheets=None):
     for sheet in sheets_to_read:
         df_raw = xl.parse(sheet, header=None)
 
+        # Pre-clean
         df_raw.dropna(axis=0, how="all", inplace=True)
         df_raw.dropna(axis=1, how="all", inplace=True)
 
         if df_raw.empty:
             continue
 
+        # Clean the table
         df = clean_table(df_raw)
         if not df.empty:
             tables.append(df)
@@ -217,9 +224,9 @@ def classify_statement(df):
 # =========================================================
 st.title("📊 Intelligent Financial Statement Extractor (PDF / Excel)")
 st.write(
-    "Extract **all tables**, detect real headers (avoid data rows as header), "
-    "fix duplicate headers, allow sheet selection, and classify tables into "
-    "Balance Sheet, Income Statement, Cash Flow, or Other."
+    "Extract **all tables**, detect real headers intelligently, "
+    "remove empty NaN columns, fix duplicate headers, allow sheet selection, "
+    "and classify tables into Balance Sheet, Income Statement, Cash Flow, or Other."
 )
 
 uploaded_file = st.file_uploader("Upload PDF or Excel file", type=["pdf", "xlsx", "xls"])
@@ -233,7 +240,7 @@ if uploaded_file:
     ext = os.path.splitext(file_path)[1].lower()
     selected_sheets = None
 
-    # Excel → show sheet selection
+    # Excel → sheet selection UI
     if ext in [".xlsx", ".xls"]:
         xl = pd.ExcelFile(file_path, engine="openpyxl")
 
@@ -256,9 +263,9 @@ if uploaded_file:
     else:
         tables = read_pdf_file(file_path)
 
-    st.success(f"✔ Extracted {len(tables)} tables")
+    st.success(f"✔ Extracted {len(tables)} tables successfully")
 
-    # Classification groups
+    # Classification containers
     classified_tables = {
         "Balance Sheet": [],
         "Income Statement": [],
@@ -266,7 +273,7 @@ if uploaded_file:
         "Other": []
     }
 
-    # Display & classify
+    # Display & classify tables
     for idx, df in enumerate(tables, start=1):
         st.subheader(f"🔍 Table {idx}")
         st.dataframe(df, use_container_width=True)
@@ -282,7 +289,7 @@ if uploaded_file:
     # Download
     excel_file = to_excel(classified_tables)
     st.download_button(
-        label="📥 Download Classified Tables (Excel)",
+        label="📥 Download Extracted & Classified Tables (Excel)",
         data=excel_file,
         file_name="Financial_Statements_Extracted.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
