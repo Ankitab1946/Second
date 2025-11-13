@@ -19,7 +19,7 @@ def to_excel(statement_dict):
         if len(tables) == 0:
             continue
 
-        # Add each table into a separate sheet within the statement group
+        # Each table becomes its own sheet
         for i, df in enumerate(tables, start=1):
             sheet_name = f"{statement[:28]}_{i}"
             df.to_excel(writer, index=False, sheet_name=sheet_name)
@@ -39,7 +39,9 @@ def clean_table(df):
     if df.empty:
         return df
 
+    # Auto detect header row
     header_row = df.notnull().mean(axis=1).idxmax()
+
     df.columns = df.iloc[header_row]
     df = df[header_row + 1:]
 
@@ -50,13 +52,15 @@ def clean_table(df):
 
 
 # ---------------------------------------------------------
-# Extract all tables from EXCEL
+# Extract ALL tables from Excel with sheet selection
 # ---------------------------------------------------------
-def read_excel_file(file_path):
-    xl = pd.ExcelFile(file_path)
+def read_excel_file(file_path, selected_sheets=None):
+    xl = pd.ExcelFile(file_path, engine="openpyxl")
     tables = []
 
-    for sheet in xl.sheet_names:
+    sheets_to_read = selected_sheets if selected_sheets else xl.sheet_names
+
+    for sheet in sheets_to_read:
         df_raw = xl.parse(sheet, header=None)
 
         df_raw.dropna(axis=0, how='all', inplace=True)
@@ -68,20 +72,21 @@ def read_excel_file(file_path):
         header_row = df_raw.notnull().mean(axis=1).idxmax()
         df = xl.parse(sheet, header=header_row)
 
-        df.columns = df.columns.fillna(method='ffill')
+        # FIX: fillna for header must be done via Series
+        df.columns = pd.Series(df.columns).fillna(method="ffill")
 
         tables.append(df)
 
-    return tables
+    return tables, xl.sheet_names
 
 
 # ---------------------------------------------------------
-# Extract all tables from PDF
+# Extract ALL tables from PDF
 # ---------------------------------------------------------
 def read_pdf_file(file_path):
     all_tables = []
 
-    # Method 1 — Camelot (best for digital PDFs)
+    # Method 1 — Camelot for digital PDFs
     try:
         camelot_tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
         for t in camelot_tables:
@@ -91,12 +96,12 @@ def read_pdf_file(file_path):
     except:
         pass
 
-    # Method 2 — pdfplumber (works for images & text)
+    # Method 2 — pdfplumber
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
-                raw_tables = page.extract_tables()
-                for table in raw_tables:
+                extracted = page.extract_tables()
+                for table in extracted:
                     df = clean_table(pd.DataFrame(table))
                     if not df.empty:
                         all_tables.append(df)
@@ -117,19 +122,21 @@ def read_pdf_file(file_path):
 
 
 # ---------------------------------------------------------
-# Auto-classify each table into statement type
+# Classify table by financial statement type
 # ---------------------------------------------------------
 def classify_statement(df):
     text = " ".join(str(x).lower() for x in df.columns.tolist())
-    text += " " + " ".join(df.astype(str).fillna("").apply(lambda x: " ".join(x), axis=1).tolist())
+    text += " " + " ".join(
+        df.astype(str).fillna("").apply(lambda x: " ".join(x), axis=1).tolist()
+    )
 
-    if any(keyword in text for keyword in ["balance sheet", "equity", "assets", "liabilities", "net worth"]):
+    if any(x in text for x in ["balance sheet", "equity", "assets", "liabilities"]):
         return "Balance Sheet"
 
-    if any(keyword in text for keyword in ["income", "revenue", "profit", "loss", "p&l", "statement of operations"]):
+    if any(x in text for x in ["income", "revenue", "profit", "loss", "p&l"]):
         return "Income Statement"
 
-    if any(keyword in text for keyword in ["cash flow", "operating", "investing", "financing"]):
+    if any(x in text for x in ["cash flow", "operating", "investing", "financing"]):
         return "Cash Flow Statement"
 
     return "Other"
@@ -138,8 +145,11 @@ def classify_statement(df):
 # ---------------------------------------------------------
 # STREAMLIT UI
 # ---------------------------------------------------------
-st.title("📊 Financial Statement Extractor (Multi-Table Detection)")
-st.write("Upload Annual Reports (PDF/Excel). Extract ALL tables and classify them into: **Balance Sheet**, **Income Statement**, **Cash Flow Statement**, or Others.**")
+st.title("📊 Financial Statement Extractor (Multi-Table + Sheet Selection)")
+st.write(
+    "Upload PDF or Excel files. This app extracts **ALL tables**, cleans them, and classifies them into "
+    "**Balance Sheet**, **Income Statement**, **Cash Flow Statement**, or **Other**."
+)
 
 uploaded_file = st.file_uploader("Upload PDF or Excel", type=["pdf", "xlsx", "xls"])
 
@@ -150,17 +160,34 @@ if uploaded_file:
 
     ext = os.path.splitext(file_path)[1].lower()
 
-    st.info("⏳ Extracting tables... please wait.")
+    selected_sheets = None
 
-    # Extract ALL tables
+    # Excel: show sheet selection
     if ext in [".xlsx", ".xls"]:
-        tables = read_excel_file(file_path)
+        xl = pd.ExcelFile(file_path, engine="openpyxl")
+
+        st.subheader("📄 Select sheets to extract:")
+        selected_sheets = st.multiselect(
+            "Choose sheet(s)",
+            options=xl.sheet_names,
+            default=xl.sheet_names
+        )
+
+        if len(selected_sheets) == 0:
+            st.warning("Please select at least one sheet to continue.")
+            st.stop()
+
+    st.info("⏳ Extracting and classifying tables...")
+
+    # Extract tables
+    if ext in [".xlsx", ".xls"]:
+        tables, all_sheets = read_excel_file(file_path, selected_sheets)
     else:
         tables = read_pdf_file(file_path)
 
     st.success(f"✔ Extracted {len(tables)} tables!")
 
-    # Prepare buckets
+    # Prepare classification buckets
     classified_tables = {
         "Balance Sheet": [],
         "Income Statement": [],
@@ -168,7 +195,7 @@ if uploaded_file:
         "Other": []
     }
 
-    # Classify each table
+    # Show tables and classify
     for idx, df in enumerate(tables, start=1):
         st.markdown(f"### 🔍 Table {idx}")
         st.dataframe(df, use_container_width=True)
@@ -176,16 +203,16 @@ if uploaded_file:
         st_type = classify_statement(df)
         classified_tables[st_type].append(df)
 
-    # Show grouping summary
-    st.markdown("## 📌 Classified Summary")
+    # Summary
+    st.markdown("## 📌 Classification Summary")
     for k, v in classified_tables.items():
-        st.write(f"**{k}**: {len(v)} tables")
+        st.write(f"**{k}**: {len(v)} tables detected")
 
     # Download button
     excel_file = to_excel(classified_tables)
 
     st.download_button(
-        label="📥 Download All Extracted & Classified Statements (Excel)",
+        label="📥 Download All Classified Tables (Excel)",
         data=excel_file,
         file_name="Extracted_Financial_Statements.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
