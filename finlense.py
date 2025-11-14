@@ -1,7 +1,6 @@
 ###############################################################
-#  FINAL APP.PY (Row1+Row2+Row3 Strict Header Engine)
+#  FINAL APP.PY (Row1+Row2+Row3 Strict Header Engine, A3 Format)
 #  Supports: .xlsx, .xlsm, .xls, .xlsb, .csv, .pdf
-#  Updated: width="stretch"
 ###############################################################
 
 import streamlit as st
@@ -23,7 +22,7 @@ try:
 except:
     pyxlsb = None
 
-st.set_page_config(page_title="Financial Extractor FINAL", layout="wide")
+st.set_page_config(page_title="Financial Extractor FINAL (A3 Format)", layout="wide")
 
 ###############################################################
 # CONFIG
@@ -36,19 +35,28 @@ IGNORED_STATUS_WORDS = {
 }
 
 VALID_PARENT_KEYWORDS = {
-    "historical annuals",
-    "historical interims",
-    "forecasts",
-    "cagrars",
-    "historical",
-    "annual",
-    "interim",
-    "budget",
-    "plan",
-    "projection",
-    "actuals",
-    "ltm"
+    "historical annuals", "historical annual", "historical interims",
+    "forecasts", "cagrars", "historical", "annual",
+    "interim", "budget", "plan", "projection", "actuals", "ltm"
 }
+
+###############################################################
+# A3 OUTPUT FORMATTER
+###############################################################
+
+def format_token_for_output(token: str) -> str:
+    """Convert 'historical annual' → 'Historical_Annual' (A3 Format)."""
+    if not token:
+        return ""
+    token = token.strip()
+    token = token.lower()
+    token = " ".join(token.split())   # normalize spacing
+    # capitalize each word
+    token = " ".join(w.capitalize() for w in token.split(" "))
+    # convert spaces → underscores
+    token = token.replace(" ", "_")
+    return token
+
 
 ###############################################################
 # HEADER TOKEN VALIDATION (STRICT)
@@ -57,23 +65,21 @@ VALID_PARENT_KEYWORDS = {
 def looks_like_period_or_header_token(token: str) -> bool:
     if not token:
         return False
+
     t = token.strip().lower()
 
     if t in IGNORED_STATUS_WORDS:
         return False
 
-    if t in VALID_PARENT_KEYWORDS:
-        return True
-
-    # 4-digit year
+    # strict 4-digit year
     if re.fullmatch(r"\d{4}", t):
         return True
 
-    # valid year ranges
+    # strict year range
     if re.fullmatch(r"\d{4}[\-_–]\d{4}", t):
         return True
 
-    # 1H / 2H / Q1–Q4 / LTM
+    # period tokens (1H / 2H / LTM / Q1–Q4)
     if re.fullmatch(r"[12]h", t):
         return True
     if re.fullmatch(r"q[1-4]", t):
@@ -81,11 +87,31 @@ def looks_like_period_or_header_token(token: str) -> bool:
     if t == "ltm":
         return True
 
-    # reject floats, decimals, random numbers
+    # reject floats/decimals
     if re.fullmatch(r"-?\d+\.\d+", t):
         return False
+
+    # reject pure integers except years
     if t.isdigit():
         return False
+
+    # -------------------------------------------------------------------
+    # UNIVERSAL parent-band detector (handles "Historical Annual")
+    # -------------------------------------------------------------------
+    base = re.sub(r"[.\-]+", " ", t).replace("  ", " ").strip()
+
+    # Accept EXACT "historical annual"
+    if "historical" in base and "annual" in base:
+        return True
+
+    # Accept shortened
+    if base.startswith("hist") and "ann" in base:
+        return True
+
+    # Accept any variation containing parent keywords
+    for kw in VALID_PARENT_KEYWORDS:
+        if kw in base:
+            return True
 
     return False
 
@@ -95,8 +121,7 @@ def looks_like_period_or_header_token(token: str) -> bool:
 ###############################################################
 
 def dedupe(cols):
-    new = []
-    counts = {}
+    out, counts = [], {}
     for c in cols:
         k = "" if c is None else str(c).strip()
         if k not in counts:
@@ -104,22 +129,22 @@ def dedupe(cols):
         else:
             counts[k] += 1
             k = f"{k}_{counts[k]}"
-        new.append(k)
-    return new
+        out.append(k)
+    return out
 
 
 def to_excel(groups):
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        for cat, tablist in groups.items():
-            for i, df in enumerate(tablist, 1):
+        for cat, lst in groups.items():
+            for i, df in enumerate(lst, 1):
                 df.to_excel(writer, index=False, sheet_name=f"{cat[:28]}_{i}")
     out.seek(0)
     return out
 
 
 ###############################################################
-# MERGED CELL MAP
+# MERGED PARENT DECTECTOR
 ###############################################################
 
 def get_merged_maps_ws(ws):
@@ -131,7 +156,7 @@ def get_merged_maps_ws(ws):
                 rng.min_row, rng.min_col, rng.max_row, rng.max_col
             )
 
-            val = ws.cell(row=min_row, column=min_col).value
+            val = ws.cell(min_row, min_col).value
             if val is None:
                 continue
 
@@ -140,7 +165,6 @@ def get_merged_maps_ws(ws):
             if min_row == 2:
                 for c in range(min_col, max_col+1):
                     col_parent_map[c] = val
-
     except:
         pass
 
@@ -148,7 +172,7 @@ def get_merged_maps_ws(ws):
 
 
 ###############################################################
-# HEADER BUILDER (ROW1 + ROW2 + ROW3)
+# HEADER BUILDER (ROW 1 + ROW 2 + ROW 3)
 ###############################################################
 
 def build_headers_from_ws(ws, ncols):
@@ -165,7 +189,7 @@ def build_headers_from_ws(ws, ncols):
             if looks_like_period_or_header_token(r1s):
                 parts.append(r1s)
 
-        # ROW 2 (merged OR value)
+        # ROW 2 (merged OR direct)
         parent = col_parent_map.get(col)
         if parent and looks_like_period_or_header_token(parent):
             parts.append(parent)
@@ -183,13 +207,16 @@ def build_headers_from_ws(ws, ncols):
             if looks_like_period_or_header_token(r3s):
                 parts.append(r3s)
 
-        # clean duplicates
+        # remove duplicates
         final = []
         for p in parts:
             if p not in final:
                 final.append(p)
 
-        headers.append("_".join(final) if final else "")
+        # format each token → A3 style
+        final_fmt = [format_token_for_output(x) for x in final]
+
+        headers.append("_".join(final_fmt) if final_fmt else "")
 
     return dedupe(headers)
 
@@ -230,7 +257,7 @@ def clean_cell(x):
 
 
 ###############################################################
-# CLEAN XLSX / XLSM
+# CLEAN XLSX / XLSM TABLE
 ###############################################################
 
 def clean_openxml_table(df_raw, sheet, filepath, debug):
@@ -241,10 +268,9 @@ def clean_openxml_table(df_raw, sheet, filepath, debug):
     ws = wb[sheet]
 
     headers = build_headers_from_ws(ws, df.shape[1])
-    headers[0] = "particulars"
+    headers[0] = "Particulars"
     df.columns = headers
 
-    # remove header rows
     df = df.iloc[3:].reset_index(drop=True)
 
     df = df.applymap(clean_cell)
@@ -270,10 +296,12 @@ def clean_simple_table(df_raw):
                 s = str(v).strip().lower()
                 if looks_like_period_or_header_token(s):
                     parts.append(s)
-        headers.append("_".join(parts) if parts else "")
+
+        final_fmt = [format_token_for_output(x) for x in parts]
+        headers.append("_".join(final_fmt) if final_fmt else "")
 
     headers = dedupe(headers)
-    headers[0] = "particulars"
+    headers[0] = "Particulars"
     df.columns = headers
 
     df = df.iloc[3:].reset_index(drop=True)
@@ -284,7 +312,7 @@ def clean_simple_table(df_raw):
 
 
 ###############################################################
-# PDF HELPER
+# PDF TABLES
 ###############################################################
 
 def extract_pdf_tables(path):
@@ -310,12 +338,12 @@ def extract_pdf_tables(path):
 
 
 ###############################################################
-# CLASSIFICATION
+# CLASSIFIER
 ###############################################################
 
 def classify(df):
     t = " ".join(df.columns).lower()
-    if any(k in t for k in ["asset", "liabil", "balance", "equity"]):
+    if any(k in t for k in ["asset", "liabil", "equity", "balance"]):
         return "Balance Sheet"
     if any(k in t for k in ["income", "profit", "revenue", "loss"]):
         return "Income Statement"
@@ -328,7 +356,7 @@ def classify(df):
 # STREAMLIT UI
 ###############################################################
 
-st.title("📊 Financial Extractor — FINAL (width=stretch applied)")
+st.title("📊 Financial Extractor — FINAL (A3 Header Formatting)")
 
 debug = st.sidebar.checkbox("Debug Mode", False)
 
@@ -350,7 +378,6 @@ tables = []
 # ROUTING BY EXTENSION
 ###############################################################
 
-# XLSX / XLSM
 if ext in [".xlsx", ".xlsm"]:
     xlf = pd.ExcelFile(filepath, engine="openpyxl")
     sheets = st.multiselect("Select Sheets", xlf.sheet_names, xlf.sheet_names)
@@ -358,7 +385,6 @@ if ext in [".xlsx", ".xlsm"]:
         df_raw = xlf.parse(s, header=None, dtype=object)
         tables.append(clean_openxml_table(df_raw, s, filepath, debug))
 
-# XLS
 elif ext == ".xls":
     xlf = pd.ExcelFile(filepath, engine="xlrd")
     sheets = st.multiselect("Select Sheets", xlf.sheet_names, xlf.sheet_names)
@@ -366,7 +392,6 @@ elif ext == ".xls":
         df_raw = xlf.parse(s, header=None, dtype=object)
         tables.append(clean_simple_table(df_raw))
 
-# XLSB
 elif ext == ".xlsb":
     if pyxlsb:
         xlf = pd.ExcelFile(filepath, engine="pyxlsb")
@@ -375,12 +400,10 @@ elif ext == ".xlsb":
             df_raw = pd.read_excel(filepath, sheet_name=s, header=None, engine="pyxlsb", dtype=object)
             tables.append(clean_simple_table(df_raw))
 
-# CSV
 elif ext == ".csv":
     df_raw = pd.read_csv(filepath, header=None)
     tables.append(clean_simple_table(df_raw))
 
-# PDF
 elif ext == ".pdf":
     for df_raw in extract_pdf_tables(filepath):
         tables.append(clean_simple_table(df_raw))
@@ -403,9 +426,9 @@ groups = {
 
 for i, df in enumerate(tables, 1):
     st.subheader(f"Extracted Table {i}")
-    st.dataframe(df, width="stretch")   # <<<< PATCH APPLIED HERE
-
+    st.dataframe(df, width="stretch")
     groups[classify(df)].append(df)
+
 
 ###############################################################
 # SUMMARY + DOWNLOAD
