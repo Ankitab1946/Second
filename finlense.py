@@ -1,9 +1,6 @@
-###############################################################
-#  FINAL APP.PY
-#  Multi-Layer Financial Header Extractor
-#  Supports XLSX / XLSM / XLS / XLSB / CSV / PDF
-#  Uses Excel Row2 + Row3 directly (correct header engine)
-###############################################################
+# app.py - Final (single-file)
+# Supports: .xlsx, .xlsm, .xls, .xlsb, .csv, .pdf
+# Robust header engine: uses Excel Row2 + Row3 (openpyxl) and merged parents
 
 import streamlit as st
 import pandas as pd
@@ -11,209 +8,293 @@ import re
 import os
 from io import BytesIO
 
+# optional imports
 try:
     import openpyxl
     from openpyxl import load_workbook
-except:
+except Exception:
     openpyxl = None
 
-st.set_page_config(page_title="Financial Extractor (Final Stable)", layout="wide")
+# For .xlsb support (pyxlsb engine)
+try:
+    import pyxlsb  # noqa: F401
+except Exception:
+    pyxlsb = None
 
+st.set_page_config(page_title="Financial Extractor (Final v2)", layout="wide")
 
-# ============================================================
-# Utility: Export output to Excel
-# ============================================================
+# -------------------------
+# Configuration: ignore words that must NOT be headers or numeric values
+# -------------------------
+IGNORED_STATUS_WORDS = {
+    "restated",
+    "provisional",
+    "unaudited",
+    "reclassified",
+    "notes",
+    "revised",
+    "converted",
+    "normalized",
+    "unaudited/unauthorised"
+}
+
+# small helper to check if a token is a likely period/year/valid header fragment
+def looks_like_period_or_header_token(token: str) -> bool:
+    if not token:
+        return False
+    t = token.strip().lower()
+    if t in IGNORED_STATUS_WORDS:
+        return False
+    # year e.g., 2020
+    if re.fullmatch(r"\d{4}", t):
+        return True
+    # year range 2020-2024 or 2020_2024 or 2020–2024
+    if re.search(r"\d{4}[\-_–]\d{4}", t):
+        return True
+    # 1H, 2H, Q1, Q2
+    if re.fullmatch(r"\d{1,2}h", t) or re.fullmatch(r"q\d", t):
+        return True
+    # LTM, CAGR, CAGRARS, Forecasts, Historical etc. allow broad words
+    if any(k in t for k in ["ltm", "cagr", "cagrars", "forecast", "forecasted", "histor", "annual", "interim", "budget", "variation", "variance"]):
+        return True
+    # percent or numeric (rare in header)
+    if re.fullmatch(r"-?\d+(\.\d+)?%?", t):
+        return True
+    # fallback: if token is short alpha word (like "FY", "FY20")
+    if len(t) <= 6 and re.fullmatch(r"[a-z0-9_]+", t):
+        return True
+    return False
+
+# -------------------------
+# Utilities
+# -------------------------
 def to_excel(groups):
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         for category, tables in groups.items():
             for i, df in enumerate(tables, start=1):
-                df.to_excel(writer, index=False, sheet_name=f"{category[:28]}_{i}")
+                sheet = f"{category[:28]}_{i}"
+                try:
+                    df.to_excel(writer, index=False, sheet_name=sheet)
+                except Exception:
+                    # fallback to safe sheet name
+                    df.to_excel(writer, index=False, sheet_name=f"Sheet_{i}")
     out.seek(0)
     return out
 
-
-# ============================================================
-# Deduplicate column names
-# ============================================================
 def dedupe(cols):
-    new, count = [], {}
+    new = []
+    counts = {}
     for c in cols:
-        c = "" if c is None else str(c).strip()
-        if c not in count:
-            count[c] = 0
+        key = "" if c is None else str(c).strip()
+        if key not in counts:
+            counts[key] = 0
+            new.append(key)
         else:
-            count[c] += 1
-            c = f"{c}_{count[c]}"
-        new.append(c)
+            counts[key] += 1
+            new.append(f"{key}_{counts[key]}")
     return new
 
-
-# ============================================================
-# Extract merged parent bands from Excel using openpyxl
-# ============================================================
-def get_merged_parents_openpyxl(ws):
-    merged_parent = {}
-    col_parent = {}
-
-    for mr in ws.merged_cells.ranges:
-        min_row, min_col = mr.min_row, mr.min_col
-        max_row, max_col = mr.max_row, mr.max_col
-
-        val = ws.cell(min_row, min_col).value
-        if val is None:
-            continue
-        val = str(val).strip()
-
-        for r in range(min_row, max_row + 1):
-            for c in range(min_col, max_col + 1):
-                merged_parent[(r, c)] = val
-
-        if min_row == 2:
-            for c in range(min_col, max_col + 1):
-                col_parent[c] = val
-
+# -------------------------
+# openpyxl merged-parent extraction (Row2 parents)
+# -------------------------
+def get_merged_maps_ws(ws):
+    merged_parent = {}   # (row, col) -> top-left merged value
+    col_parent = {}      # col -> parent (if merge starts at row 2)
+    try:
+        for rng in ws.merged_cells.ranges:
+            min_row, min_col, max_row, max_col = rng.min_row, rng.min_col, rng.max_row, rng.max_col
+            top_val = ws.cell(row=min_row, column=min_col).value
+            if top_val is None:
+                continue
+            top_val = str(top_val).strip()
+            for r in range(min_row, max_row + 1):
+                for c in range(min_col, max_col + 1):
+                    merged_parent[(r, c)] = top_val
+            # if merged block originates on row 2 treat as parent band
+            if min_row == 2:
+                for c in range(min_col, max_col + 1):
+                    col_parent[c] = top_val
+    except Exception:
+        # if ws has no merged ranges or openpyxl weirdness, return empties
+        return {}, {}
     return merged_parent, col_parent
 
-
-# ============================================================
-# CORRECT HEADER BUILDER — guaranteed accurate
-# ALWAYS read header rows from Excel, not pandas
-# ============================================================
-def build_headers_excel(ws, df):
-    ncols = df.shape[1]
-
-    merged_parent_map, col_parent_map = get_merged_parents_openpyxl(ws)
-
+# -------------------------
+# Header builder: uses Excel row2 & row3 directly (openpyxl)
+# -------------------------
+def build_headers_from_ws(ws, ncols):
+    merged_parent_map, col_parent_map = get_merged_maps_ws(ws)
     headers = []
     for col_idx in range(1, ncols + 1):
         parts = []
+        # Parent band (from merged region in row2)
+        parent = col_parent_map.get(col_idx, "")
+        if parent and isinstance(parent, str):
+            parent_token = parent.strip()
+            if parent_token and parent_token.lower() not in IGNORED_STATUS_WORDS:
+                parts.append(parent_token)
 
-        # 1. Parent header from merged row2 band
-        parent = col_parent_map.get(col_idx)
-        if parent:
-            parts.append(str(parent).strip())
+        # Row2 exact cell from Excel
+        try:
+            r2_val = ws.cell(row=2, column=col_idx).value
+        except Exception:
+            r2_val = None
+        if r2_val is not None:
+            r2s = str(r2_val).strip()
+            if r2s and r2s.lower() not in IGNORED_STATUS_WORDS and looks_like_period_or_header_token(r2s):
+                if r2s not in parts:
+                    parts.append(r2s)
 
-        # 2. Child level 1 = Excel Row2
-        r2 = ws.cell(row=2, column=col_idx).value
-        if r2 is not None:
-            val = str(r2).strip()
-            if val.lower() not in ["", "nan", "none"]:
-                parts.append(val)
+        # Row3 exact cell from Excel
+        try:
+            r3_val = ws.cell(row=3, column=col_idx).value
+        except Exception:
+            r3_val = None
+        if r3_val is not None:
+            r3s = str(r3_val).strip()
+            if r3s and r3s.lower() not in IGNORED_STATUS_WORDS and looks_like_period_or_header_token(r3s):
+                if r3s not in parts:
+                    parts.append(r3s)
 
-        # 3. Child level 2 = Excel Row3
-        r3 = ws.cell(row=3, column=col_idx).value
-        if r3 is not None:
-            val = str(r3).strip()
-            if val.lower() not in ["", "nan", "none"]:
-                parts.append(val)
-
-        # Remove duplicates preserve order
+        # final join preserving order and uniqueness
         final = []
         for p in parts:
             if p and p not in final:
                 final.append(p)
-
         headers.append("_".join(final) if final else "")
-
     return dedupe(headers)
 
-
-# ============================================================
-# Remove narrow Excel columns (template columns)
-# ============================================================
-def remove_narrow_columns_openpyxl(df, ws, threshold=2):
+# -------------------------
+# Remove narrow columns by width (openpyxl)
+# -------------------------
+def remove_narrow_columns(df, ws, threshold=2):
     try:
         letters = [c[0].column_letter for c in ws.columns]
         keep = []
         for idx, letter in enumerate(letters):
             dim = ws.column_dimensions.get(letter)
-            width = dim.width if dim and dim.width is not None else ws.column_dimensions.defaultColWidth
+            width = dim.width if (dim and dim.width is not None) else getattr(ws.column_dimensions, "defaultColWidth", None)
             if width is None or width > threshold:
                 keep.append(idx)
-        return df.iloc[:, keep]
-    except:
-        return df
+        if keep:
+            return df.iloc[:, keep]
+    except Exception:
+        pass
+    return df
 
-
-# ============================================================
-# Clean numeric values
-# ============================================================
+# -------------------------
+# Clean cells - ignore status words in numeric columns
+# -------------------------
 def clean_cell(x):
     if pd.isna(x):
         return pd.NA
-    s = str(x).strip().replace("\u00A0", " ").replace(",", "")
-    if s.lower() in ["n.a.", "n.a", "na", "-", "--", ""]:
+    s = str(x).strip()
+    if not s:
         return pd.NA
-    if re.fullmatch(r"\(\s*[\d\.]+\s*\)", s):
+    low = s.lower()
+    # treat ignored statuses as NA (prevents mixing text in numeric columns)
+    if low in IGNORED_STATUS_WORDS:
+        return pd.NA
+    # percentages
+    if low.endswith('%'):
         try:
-            return -float(s.strip("()"))
+            return float(low[:-1].replace(",","").strip()) / 100.0
         except:
             return s
-    if s.endswith("%"):
+    # parentheses negative
+    if re.fullmatch(r"^\(\s*[\d,\.]+\s*\)$", s):
         try:
-            return float(s[:-1]) / 100
+            return -float(s.strip("()").replace(",",""))
         except:
             return s
-    if re.fullmatch(r"-?\d+(\.\d+)?", s):
+    # plain numeric with optional commas
+    s_clean = s.replace(",","")
+    if re.fullmatch(r"^-?\d+(\.\d+)?$", s_clean):
         try:
-            return float(s)
+            return float(s_clean)
         except:
             return s
     return s
 
-
-# ============================================================
-# Clean Excel table (OpenXML: .xlsx/.xlsm)
-# ============================================================
-def clean_excel_table_openxml(df_raw, sheet_name, filepath, debug=False):
+# -------------------------
+# Core Excel (.xlsx/.xlsm) cleaning using openpyxl for header/merged info
+# df_raw expected header=None
+# -------------------------
+def clean_openxml_table(df_raw, sheet_name, filepath, debug=False):
+    # normalize empty tokens
     df = df_raw.replace(["", " ", None], pd.NA)
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    if df.empty:
+        return df
 
-    wb = load_workbook(filepath, data_only=True)
-    ws = wb[sheet_name]
+    # open workbook and sheet
+    try:
+        wb = load_workbook(filepath, data_only=True)
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+    except Exception as e:
+        # fallback to simple header builder using df
+        ws = None
 
     if debug:
-        st.subheader(f"DEBUG — Raw header rows for {sheet_name}")
-        st.write(df.head(4))
+        st.subheader(f"DEBUG: Raw top rows (sheet={sheet_name})")
+        try:
+            st.write(df.head(4))
+        except Exception:
+            pass
 
-    # Build headers from TRUE Excel rows
-    headers = build_headers_excel(ws, df)
+    # Build headers using true Excel row2 & row3 when ws is available
+    if ws is not None:
+        ncols = df.shape[1]
+        headers = build_headers_from_ws(ws, ncols)
+    else:
+        # fallback: join df.iloc[1] + df.iloc[2] if present
+        header_block = df.iloc[[1,2]] if df.shape[0] > 2 else (df.iloc[[1]] if df.shape[0] > 1 else df.iloc[[0]])
+        headers = []
+        for col_vals in header_block.T.values:
+            parts = [str(v).strip() for v in col_vals if str(v).strip() and str(v).strip().lower() not in IGNORED_STATUS_WORDS]
+            headers.append("_".join(parts) if parts else "")
+        headers = dedupe(headers)
 
     if debug:
-        st.subheader("DEBUG — Final computed headers")
-        st.write(headers)
+        st.subheader("DEBUG: Computed headers")
+        st.write(headers[:300])
 
-    # First col = Particulars
+    # assign headers - ensure first column is Particulars (title column)
     if headers:
         headers[0] = "Particulars"
-
     df.columns = headers
 
-    # Remove header rows (row1=title, row2&3=headers)
+    # drop header rows (Row1 title + Row2/Row3 headers)
+    # we used Excel rows directly; pandas row indexes may not be exactly Excel row numbers
+    # df_raw had header=None: df rows correspond to Excel rows starting at 1
+    # thus drop first 3 rows
     df = df.iloc[3:].reset_index(drop=True)
 
-    # Remove narrow template columns
-    df = remove_narrow_columns_openpyxl(df, ws)
+    # remove narrow columns based on Excel widths (if ws available)
+    if ws is not None:
+        df = remove_narrow_columns(df, ws, threshold=2)
 
+    # clean values (map status words to NA, convert numeric)
     df = df.applymap(clean_cell)
     df = df.dropna(axis=1, how="all")
-
     df.columns = dedupe(df.columns)
     return df
 
-
-# ============================================================
-# Clean Excel for .xls or .xlsb (fallback: row2+row3 from pandas)
-# ============================================================
-def clean_excel_table_simple(df_raw):
+# -------------------------
+# Simple cleaning (fallback) for .xls/.xlsb/.csv where we don't have full openpyxl
+# Treat first three rows as [title,row2,row3]
+# -------------------------
+def clean_simple_table(df_raw, source_label="sheet", debug=False):
     df = df_raw.replace(["", " ", None], pd.NA)
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
-    header_block = df.iloc[[1, 2]] if df.shape[0] > 2 else df.iloc[[1]]
+    if df.empty:
+        return df
+    header_block = df.iloc[[1,2]] if df.shape[0] > 2 else (df.iloc[[1]] if df.shape[0] > 1 else df.iloc[[0]])
     headers = []
-    for tup in header_block.T.values:
-        vals = [str(x).strip() for x in tup if str(x).strip() not in ["", "nan", "none"]]
-        headers.append("_".join(vals) if vals else "")
+    for col_vals in header_block.T.values:
+        parts = [str(v).strip() for v in col_vals if str(v).strip() and str(v).strip().lower() not in IGNORED_STATUS_WORDS and looks_like_period_or_header_token(str(v).strip())]
+        headers.append("_".join(parts) if parts else "")
     headers = dedupe(headers)
     if headers:
         headers[0] = "Particulars"
@@ -222,148 +303,194 @@ def clean_excel_table_simple(df_raw):
     df = df.applymap(clean_cell)
     df = df.dropna(axis=1, how="all")
     df.columns = dedupe(df.columns)
+    if debug:
+        st.subheader(f"DEBUG: simple cleaned headers ({source_label})")
+        st.write(df.columns.tolist()[:200])
     return df
 
-
-# ============================================================
-# Clean PDF Tables
-# ============================================================
-def clean_pdf_table(df_raw):
-    df = df_raw.dropna(axis=0, how="all").dropna(axis=1, how="all")
-    header = df.iloc[0].astype(str).str.strip()
-    df.columns = dedupe(header)
-    df = df.iloc[1:].reset_index(drop=True)
-    return df.applymap(clean_cell)
-
-
-# ============================================================
-# Classification
-# ============================================================
-def classify(df):
-    t = " ".join(str(c).lower() for c in df.columns)
-    if "balance" in t or "asset" in t or "liabil" in t:
-        return "Balance Sheet"
-    if "income" in t or "revenue" in t or "profit" in t:
-        return "Income Statement"
-    if "cash" in t or "operat" in t or "invest" in t:
-        return "Cash Flow Statement"
-    return "Other"
-
-
-# ============================================================
-# Streamlit UI
-# ============================================================
-st.title("📊 Financial Statement Extractor — Multi-Layer Header Engine")
-
-debug_mode = st.sidebar.checkbox("Enable Debug Mode", False)
-
-uploaded = st.file_uploader(
-    "Upload file (.xlsx, .xlsm, .xls, .xlsb, .csv, .pdf)",
-    type=["xlsx", "xlsm", "xls", "xlsb", "csv", "pdf"]
-)
-
-if not uploaded:
-    st.stop()
-
-filepath = f"temp_{uploaded.name}"
-with open(filepath, "wb") as f:
-    f.write(uploaded.getbuffer())
-
-ext = os.path.splitext(filepath)[1].lower()
-tables = []
-
-# ------------------------------------------------------------
-# XLSX / XLSM
-# ------------------------------------------------------------
-if ext in [".xlsx", ".xlsm"]:
-    xlf = pd.ExcelFile(filepath, engine="openpyxl")
-    sheets = st.multiselect("Select Sheets", xlf.sheet_names, xlf.sheet_names)
-    for s in sheets:
-        df_raw = xlf.parse(s, header=None, dtype=object)
-        cleaned = clean_excel_table_openxml(df_raw, s, filepath, debug_mode)
-        if not cleaned.empty:
-            tables.append(cleaned)
-
-# ------------------------------------------------------------
-# XLS (legacy)
-# ------------------------------------------------------------
-elif ext == ".xls":
-    xlf = pd.ExcelFile(filepath, engine="xlrd")
-    sheets = st.multiselect("Select Sheets", xlf.sheet_names, xlf.sheet_names)
-    for s in sheets:
-        df_raw = xlf.parse(s, header=None, dtype=object)
-        cleaned = clean_excel_table_simple(df_raw)
-        if not cleaned.empty:
-            tables.append(cleaned)
-
-# ------------------------------------------------------------
-# XLSB
-# ------------------------------------------------------------
-elif ext == ".xlsb":
+# -------------------------
+# Read .xlsb using pandas + pyxlsb (best-effort)
+# -------------------------
+def read_xlsb_all_sheets(filepath):
     try:
         xlf = pd.ExcelFile(filepath, engine="pyxlsb")
-        sheets = st.multiselect("Select Sheets", xlf.sheet_names, xlf.sheet_names)
-        for s in sheets:
-            df_raw = pd.read_excel(filepath, sheet_name=s, header=None, engine="pyxlsb", dtype=object)
-            cleaned = clean_excel_table_simple(df_raw)
-            if not cleaned.empty:
-                tables.append(cleaned)
-    except:
-        st.error("Unable to read XLSB. Install pyxlsb.")
-        st.stop()
+        sheets = xlf.sheet_names
+    except Exception:
+        return {}
+    out = {}
+    for s in sheets:
+        try:
+            df = pd.read_excel(filepath, sheet_name=s, engine="pyxlsb", header=None, dtype=object)
+            out[s] = df
+        except Exception:
+            continue
+    return out
 
-# ------------------------------------------------------------
-# CSV
-# ------------------------------------------------------------
-elif ext == ".csv":
-    df_raw = pd.read_csv(filepath, header=None)
-    cleaned = clean_excel_table_simple(df_raw)
-    if not cleaned.empty:
-        tables.append(cleaned)
-
-# ------------------------------------------------------------
-# PDF
-# ------------------------------------------------------------
-elif ext == ".pdf":
-    extracted = []
+# -------------------------
+# PDF cleaning helpers (camelot/pdfplumber/tabula)
+# -------------------------
+def extract_tables_from_pdf(filepath):
+    tables = []
+    # camelot lattice (best for ruled tables)
     try:
         import camelot
-        for t in camelot.read_pdf(filepath, pages="all", flavor="lattice"):
-            extracted.append(t.df)
-    except:
+        ct = camelot.read_pdf(filepath, pages="all", flavor="lattice")
+        for t in ct:
+            tables.append(t.df)
+    except Exception:
         pass
-
+    # pdfplumber
     try:
         import pdfplumber
         with pdfplumber.open(filepath) as pdf:
             for p in pdf.pages:
-                for t in p.extract_tables():
-                    extracted.append(pd.DataFrame(t))
-    except:
+                for tbl in p.extract_tables():
+                    if tbl:
+                        tables.append(pd.DataFrame(tbl))
+    except Exception:
         pass
+    # tabula (fallback)
+    try:
+        import tabula
+        tbs = tabula.read_pdf(filepath, pages="all", multiple_tables=True)
+        for t in tbs:
+            if isinstance(t, pd.DataFrame):
+                tables.append(t)
+    except Exception:
+        pass
+    return tables
 
-    for df_raw in extracted:
-        cleaned = clean_pdf_table(df_raw)
+# -------------------------
+# classification simple
+# -------------------------
+def classify(df):
+    t = " ".join([str(c).lower() for c in df.columns])
+    if any(k in t for k in ["balance", "asset", "liabil", "equity"]):
+        return "Balance Sheet"
+    if any(k in t for k in ["income", "revenue", "profit", "loss", "sales"]):
+        return "Income Statement"
+    if any(k in t for k in ["cash", "operat", "invest", "financ"]):
+        return "Cash Flow Statement"
+    return "Other"
+
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.title("Financial Statement Extractor — Final (Header-stable)")
+
+debug_mode = st.sidebar.checkbox("Enable Debug Mode (Light)", value=False)
+
+uploaded = st.file_uploader("Upload file (.xlsx, .xlsm, .xls, .xlsb, .csv, .pdf)", type=["xlsx", "xlsm", "xls", "xlsb", "csv", "pdf"])
+if not uploaded:
+    st.info("Upload a file to begin.")
+    st.stop()
+
+# Save uploaded file
+tmp_path = f"temp_{uploaded.name}"
+with open(tmp_path, "wb") as f:
+    f.write(uploaded.getbuffer())
+
+ext = os.path.splitext(tmp_path)[1].lower()
+tables = []
+
+# strict type dispatch
+if ext in [".xlsx", ".xlsm"]:
+    # require openpyxl
+    if openpyxl is None:
+        st.error("openpyxl is required to read .xlsx/.xlsm. Install: pip install openpyxl")
+        st.stop()
+    try:
+        xlf = pd.ExcelFile(tmp_path, engine="openpyxl")
+    except Exception as e:
+        st.error(f"Failed to open .xlsx/.xlsm: {e}")
+        st.stop()
+    selected = st.multiselect("Select sheets", xlf.sheet_names, xlf.sheet_names)
+    if not selected:
+        st.warning("Select at least one sheet.")
+        st.stop()
+    for sheet in selected:
+        try:
+            df_raw = xlf.parse(sheet, header=None, dtype=object)
+        except Exception as e:
+            st.warning(f"Failed to parse sheet {sheet}: {e}")
+            continue
+        cleaned = clean_openxml_table(df_raw, sheet, tmp_path, debug=debug_mode)
         if not cleaned.empty:
             tables.append(cleaned)
 
-# ============================================================
-# DISPLAY RESULTS
-# ============================================================
+elif ext == ".xls":
+    try:
+        xlf = pd.ExcelFile(tmp_path, engine="xlrd")
+    except Exception as e:
+        st.error(f"xlrd is required to read .xls. Install: pip install xlrd. Error: {e}")
+        st.stop()
+    selected = st.multiselect("Select sheets", xlf.sheet_names, xlf.sheet_names)
+    if not selected:
+        st.warning("Select at least one sheet.")
+        st.stop()
+    for sheet in selected:
+        try:
+            df_raw = xlf.parse(sheet, header=None, dtype=object)
+        except Exception as e:
+            st.warning(f"Failed to parse sheet {sheet}: {e}")
+            continue
+        cleaned = clean_simple_table(df_raw, source_label=sheet, debug=debug_mode)
+        if not cleaned.empty:
+            tables.append(cleaned)
+
+elif ext == ".xlsb":
+    if pyxlsb is None:
+        st.error("pyxlsb is required to read .xlsb. Install: pip install pyxlsb")
+        st.stop()
+    xlsb_map = read_xlsb_all_sheets(tmp_path)
+    if not xlsb_map:
+        st.error("No sheets found in .xlsb or failed to read .xlsb.")
+        st.stop()
+    selected = st.multiselect("Select sheets", list(xlsb_map.keys()), list(xlsb_map.keys()))
+    if not selected:
+        st.warning("Select at least one sheet.")
+        st.stop()
+    for sheet in selected:
+        df_raw = xlsb_map.get(sheet)
+        if df_raw is None:
+            continue
+        cleaned = clean_simple_table(df_raw, source_label=sheet, debug=debug_mode)
+        if not cleaned.empty:
+            tables.append(cleaned)
+
+elif ext == ".csv":
+    try:
+        # read raw to see header-like rows; treat as header-less (header=None)
+        df_raw = pd.read_csv(tmp_path, header=None, dtype=object)
+        cleaned = clean_simple_table(df_raw, source_label="csv", debug=debug_mode)
+        if not cleaned.empty:
+            tables.append(cleaned)
+    except Exception as e:
+        st.error(f"Failed to read CSV: {e}")
+        st.stop()
+
+elif ext == ".pdf":
+    extracted = extract_tables_from_pdf(tmp_path)
+    if not extracted:
+        st.warning("No tables found in PDF or PDF extraction failed.")
+    for df_raw in extracted:
+        try:
+            cleaned = clean_pdf_table(df_raw, debug=debug_mode)
+            if not cleaned.empty:
+                tables.append(cleaned)
+        except Exception:
+            continue
+
 st.success(f"Extracted {len(tables)} table(s)")
 
 groups = {"Balance Sheet": [], "Income Statement": [], "Cash Flow Statement": [], "Other": []}
-for i, df in enumerate(tables, 1):
+for i, df in enumerate(tables, start=1):
     st.subheader(f"Table {i}")
     st.dataframe(df, use_container_width=True)
     groups[classify(df)].append(df)
 
 st.header("Summary")
 for k, v in groups.items():
-    st.write(f"**{k}**: {len(v)} tables")
+    st.write(f"**{k}: {len(v)} tables**")
 
-st.download_button(
-    "📥 Download Extracted Financials",
-    data=to_excel(groups),
-    file_name="Extracted_Financials.xlsx"
-)
+st.download_button("📥 Download Extracted Tables", data=to_excel(groups), file_name="extracted_financials.xlsx")
