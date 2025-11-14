@@ -4,331 +4,299 @@ import camelot
 import pdfplumber
 import tabula
 import openpyxl
-import os
+from openpyxl import load_workbook
 import re
+import os
 from io import BytesIO
 
-st.set_page_config(page_title="Financial Statement Extractor", layout="wide")
 
-# =====================================================================
-# EXPORT TO EXCEL
-# =====================================================================
-def to_excel(statement_dict):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for statement, tables in statement_dict.items():
+st.set_page_config(page_title="Financial Statement Extractor (Final)", layout="wide")
+
+
+# ============================================================
+# Utility: Export to Excel
+# ============================================================
+def to_excel(groups):
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        for category, tables in groups.items():
             for i, df in enumerate(tables, start=1):
-                df.to_excel(writer, index=False, sheet_name=f"{statement[:28]}_{i}")
-    output.seek(0)
-    return output
+                df.to_excel(writer, index=False, sheet_name=f"{category[:28]}_{i}")
+    out.seek(0)
+    return out
 
 
-# =====================================================================
-# DEDUPLICATE COLUMNS
-# =====================================================================
-def deduplicate_columns(cols):
-    new_cols, count = [], {}
-    for col in cols:
-        col = str(col).strip()
-        if col not in count:
-            count[col] = 0
-            new_cols.append(col)
+# ============================================================
+# Utility: Deduplicate Columns
+# ============================================================
+def dedupe(cols):
+    new = []
+    count = {}
+    for c in cols:
+        c = str(c).strip()
+        if c not in count:
+            count[c] = 0
+            new.append(c)
         else:
-            count[col] += 1
-            new_cols.append(f"{col}_{count[col]}")
-    return new_cols
+            count[c] += 1
+            new.append(f"{c}_{count[c]}")
+    return new
 
 
-# =====================================================================
-# DETECT MULTI-ROW HEADERS
-# =====================================================================
-def detect_multirow_header(df):
-    header_rows = []
-    for idx, row in df.iterrows():
-        non_empty_ratio = row.notna().mean()
-        numeric_ratio = row.apply(
-            lambda x: str(x).replace(",", "").replace(".", "", 1)
-            .lstrip("-").isdigit()
-        ).mean()
-
-        # header rows are text-heavy
-        if non_empty_ratio >= 0.3 and numeric_ratio < 0.5:
-            header_rows.append(idx)
-        else:
-            break
-    return header_rows if header_rows else [0]
-
-
-# =====================================================================
-# READ EXCEL MERGED CELLS → PARENT HEADERS
-# =====================================================================
-def get_excel_merged_header_map(sheet):
-    parent_map = {}
-    for merged in sheet.merged_cells.ranges:
-        min_col = merged.min_col
-        max_col = merged.max_col
-        row = merged.min_row
-        value = sheet.cell(row=row, column=min_col).value
-        if not value:
+# ============================================================
+# Detect & extract merged parent from row 2
+# ============================================================
+def get_merged_parents(ws):
+    merged_parent = {}
+    for mr in ws.merged_cells.ranges:
+        min_row, min_col = mr.min_row, mr.min_col
+        max_row, max_col = mr.max_row, mr.max_col
+        top_val = ws.cell(min_row, min_col).value
+        if top_val is None:
             continue
-        value = str(value).strip()
+        top_val = str(top_val).strip()
 
-        for col in range(min_col, max_col + 1):
-            parent_map[col] = value
+        # Fill parent for entire merged block
+        for r in range(min_row, max_row + 1):
+            for c in range(min_col, max_col + 1):
+                merged_parent[(r, c)] = top_val
 
-    return parent_map
+    # Build a per-column parent (only row2 matters)
+    col_parent = {}
+    for (r, c), val in merged_parent.items():
+        if r == 2:  # Row2 parent
+            col_parent[c] = val
+
+    return merged_parent, col_parent
 
 
-# =====================================================================
-# BUILD MULTI-LAYER HEADER
-# =====================================================================
-def build_multirow_header(df, sheet_name, file_path, header_rows):
-    """
-    Deep merge all header layers:
-    Example stacked rows:
-       Historical Interims
-       1H
-       2024
-    Output → Historical Interims_1H_2024
-    """
+# ============================================================
+# Build Final Header = Parent(Row2 merged) + Row2 + Row3
+# ============================================================
+def build_final_headers(ws, df):
+    ncols = df.shape[1]
 
-    wb = openpyxl.load_workbook(file_path, data_only=True)
-    ws = wb[sheet_name]
+    # Load merged-cell structure
+    merged_parent_map, col_parent_map = get_merged_parents(ws)
 
-    merged_map = get_excel_merged_header_map(ws)
+    headers = []
 
-    header_block = df.iloc[header_rows].astype(str).fillna("").applymap(lambda x: x.strip())
-
-    final_headers = []
-
-    # iterate column-wise
-    for col_idx, col_vals in enumerate(header_block.T.values, start=1):
+    for col_idx in range(1, ncols + 1):
         parts = []
 
-        # 1) Parent (from merged Excel cells)
-        parent = merged_map.get(col_idx, "")
-        if parent and parent.lower() != "nan":
+        # 1. ALWAYS include Parent from merged range (if exists)
+        parent = col_parent_map.get(col_idx, "")
+        if parent and parent.lower() not in ["nan", "none", ""]:
             parts.append(parent)
 
-        # 2) Child & grandchild values from header rows
-        for v in col_vals:
-            if v not in ["", "nan", "none", None]:
-                parts.append(v)
+        # 2. Row 2 value (header level 1)
+        r2 = df.iloc[1, col_idx - 1] if df.shape[0] > 1 else ""
+        if pd.isna(r2):
+            # Check merged_parent_map for row2
+            r2v = merged_parent_map.get((2, col_idx), "")
+        else:
+            r2v = str(r2).strip()
 
-        final_headers.append("_".join(parts) if parts else "")
+        if r2v and r2v.lower() not in ["nan", "none", ""]:
+            if r2v not in parts:
+                parts.append(r2v)
 
-    return deduplicate_columns(final_headers)
+        # 3. Row 3 value (header level 2)
+        r3 = df.iloc[2, col_idx - 1] if df.shape[0] > 2 else ""
+        if pd.isna(r3):
+            r3v = merged_parent_map.get((3, col_idx), "")
+        else:
+            r3v = str(r3).strip()
+
+        if r3v and r3v.lower() not in ["nan", "none", ""]:
+            if r3v not in parts:
+                parts.append(r3v)
+
+        # Remove duplicates fully, keep order
+        final = [p for i, p in enumerate(parts) if p and p not in parts[:i]]
+
+        headers.append("_".join(final) if final else "")
+
+    return dedupe(headers)
 
 
-# =====================================================================
-# REMOVE BLANK-WIDTH & HIDDEN COLUMNS (Based on Excel)
-# =====================================================================
-def remove_blank_width_columns(df, sheet_name, file_path):
+# ============================================================
+# Remove narrow-width columns (Excel templates)
+# ============================================================
+def remove_narrow_columns(df, ws):
     try:
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        ws = wb[sheet_name]
-        col_letters = [col[0].column_letter for col in ws.columns]
-
         keep = []
-        for idx, col_letter in enumerate(col_letters):
+        letters = [c[0].column_letter for c in ws.columns]
+        for idx, col_letter in enumerate(letters):
             dim = ws.column_dimensions.get(col_letter)
             width = dim.width if dim and dim.width is not None else ws.column_dimensions.defaultColWidth
 
-            # blank-width column threshold
-            if width and width > 2:
+            if width is None or width > 2:  # remove blank template columns
                 keep.append(idx)
-
         return df.iloc[:, keep]
     except:
         return df
 
 
-# =====================================================================
-# CLEAN NUMERIC CEll
-# =====================================================================
-def clean_numeric_value(x):
+# ============================================================
+# Clean numeric values: %, (123), commas, n.a.
+# ============================================================
+def clean_val(x):
     if pd.isna(x):
         return pd.NA
-    s = str(x).strip().replace("\u00A0", "").replace(",", "")
+    s = str(x).strip().replace("\u00A0", " ").replace(",", "")
 
-    # (123) → -123
+    if s.lower() in ["n.a.", "n.a", "na", "-", "--", ""]:
+        return pd.NA
+
+    # (123)
     if re.fullmatch(r"\(\s*[\d\.]+\s*\)", s):
-        return float("-" + s.strip("()"))
+        try:
+            return -float(s.strip("()"))
+        except:
+            return s
 
-    # percentages
+    # percent
     if s.endswith("%"):
         try:
             return float(s[:-1]) / 100
         except:
-            return pd.NA
+            return s
 
-    if s.lower() in ["n.a.", "n.a", "na", "-", ""]:
-        return pd.NA
-
+    # numeric?
     try:
-        return float(s)
+        if re.fullmatch(r"-?\d+(\.\d+)?", s):
+            return float(s)
     except:
-        return x
+        pass
+
+    return s
 
 
-# =====================================================================
-# CLEAN TABLE
-# =====================================================================
-def clean_table(df, sheet_name=None, file_path=None):
-    df = df.replace(["", " ", "\t", "\n", "\r", "\x00", "—", "–"], pd.NA)
+# ============================================================
+# Clean Excel Table (FINAL LOGIC)
+# ============================================================
+def clean_excel_table(df_raw, sheet_name, filepath, debug=False):
+    wb = load_workbook(filepath, data_only=True)
+    ws = wb[sheet_name]
+
+    # Remove blank rows/cols
+    df = df_raw.replace(["", " ", None], pd.NA)
     df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
 
-    if df.empty:
-        return df
+    # === DEBUG: Show raw header block ===
+    if debug:
+        st.subheader(f"🔍 DEBUG: Raw Header Block (Rows 1-4) — {sheet_name}")
+        st.write(df.head(4))
 
-    header_rows = detect_multirow_header(df)
+    # BUILD FINAL HEADERS (always rows 2 and 3)
+    final_headers = build_final_headers(ws, df)
 
-    merged_header = build_multirow_header(df, sheet_name, file_path, header_rows)
-    df.columns = merged_header
+    if debug:
+        st.subheader("🔍 DEBUG: Final Merged Headers")
+        st.write(final_headers)
 
-    df = df.loc[:, [c for c in df.columns if c.strip() != ""]]
+    # Rename first column to Particulars
+    if final_headers:
+        final_headers[0] = "Particulars"
 
-    df = df.iloc[max(header_rows) + 1:].reset_index(drop=True)
+    # Apply
+    df.columns = final_headers
 
-    df = df.applymap(lambda x: pd.NA if pd.isna(x) or str(x).strip() == "" else x)
+    # Drop blank/ghost/_ columns
+    df = df.loc[:, [c for c in df.columns if c.strip() != "" and not c.startswith("_")]]
 
+    # Drop header rows (Row1 = title, Row2+3 = headers)
+    df = df.iloc[3:].reset_index(drop=True)
+
+    # Remove narrow template columns
+    df = remove_narrow_columns(df, ws)
+
+    # Clean numeric values
+    df = df.applymap(clean_val)
+
+    # Final cleanup
     df = df.dropna(axis=1, how="all")
 
-    df = remove_blank_width_columns(df, sheet_name, file_path)
-
-    df = df.applymap(clean_numeric_value)
-
-    df = df.dropna(axis=1, how="all")
     return df
 
 
-# =====================================================================
-# READ EXCEL
-# =====================================================================
-def read_excel_file(file_path, selected_sheets=None):
-    xl = pd.ExcelFile(file_path, engine="openpyxl")
-    tables = []
-
-    for sheet in (selected_sheets or xl.sheet_names):
-        df_raw = xl.parse(sheet, header=None, dtype=object)
-        df_raw = df_raw.replace(["", " ", "\t", "\n"], pd.NA)
-        df_raw = df_raw.dropna(axis=0, how="all").dropna(axis=1, how="all")
-
-        if not df_raw.empty:
-            df = clean_table(df_raw, sheet_name=sheet, file_path=file_path)
-            if not df.empty:
-                tables.append(df)
-
-    return tables
+# ============================================================
+# PDF extractor (simple headers)
+# ============================================================
+def clean_pdf_table(df_raw):
+    df = df_raw.dropna(axis=0, how="all").dropna(axis=1, how="all")
+    if df.empty:
+        return df
+    header = df.iloc[0].astype(str).str.strip()
+    df.columns = dedupe(header)
+    df = df.iloc[1:].reset_index(drop=True)
+    return df.applymap(clean_val)
 
 
-# =====================================================================
-# READ PDF
-# =====================================================================
-def read_pdf_file(file_path):
-    all_tables = []
-    try:
-        for t in camelot.read_pdf(file_path, pages="all", flavor="lattice"):
-            df = clean_table(t.df)
-            if not df.empty:
-                all_tables.append(df)
-    except:
-        pass
-
-    try:
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                for tb in page.extract_tables():
-                    df = clean_table(pd.DataFrame(tb))
-                    if not df.empty:
-                        all_tables.append(df)
-    except:
-        pass
-
-    try:
-        for t in tabula.read_pdf(file_path, pages="all", multiple_tables=True):
-            df = clean_table(t)
-            if not df.empty:
-                all_tables.append(df)
-    except:
-        pass
-
-    return all_tables
-
-
-# =====================================================================
-# CLASSIFY TABLE
-# =====================================================================
-def classify_statement(df):
-    text = " ".join(str(x).lower() for x in df.columns)
-    text += " " + " ".join(df.astype(str).fillna("").apply(lambda r: " ".join(r), axis=1))
-
-    if any(k in text for k in ["balance sheet", "assets", "liabilities", "equity"]):
+# ============================================================
+# Classification (simple keyword)
+# ============================================================
+def classify(df):
+    text = " ".join(str(c).lower() for c in df.columns)
+    if any(k in text for k in ["balance", "asset", "liability", "equity"]):
         return "Balance Sheet"
-    if any(k in text for k in ["income", "profit", "loss", "revenue"]):
+    if "revenue" in text or "income" in text or "profit" in text:
         return "Income Statement"
-    if any(k in text for k in ["cash flow", "operating", "investing", "financing"]):
+    if "cash" in text or "operating" in text or "financing" in text:
         return "Cash Flow Statement"
     return "Other"
 
 
-# =====================================================================
+# ============================================================
 # STREAMLIT UI
-# =====================================================================
-st.title("📊 Advanced Financial Extractor (Multi-Layer Headers + Merged Cells)")
-st.write("This version fully supports **multi-row hierarchical headers**, **merged Excel headers**, and cleans all values.")
+# ============================================================
+st.title("📊 Final Financial Statement Extractor (Merged Header Engine)")
 
-uploaded_file = st.file_uploader("Upload Excel or PDF", type=["xlsx", "xls", "pdf"])
+debug_mode = st.sidebar.checkbox("Enable Debug Mode", value=False)
 
-if uploaded_file:
-    file_path = f"temp_{uploaded_file.name}"
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+uploaded = st.file_uploader("Upload Excel/PDF", type=["xlsx", "xls", "pdf"])
 
-    ext = os.path.splitext(file_path)[1].lower()
+if uploaded:
+    filepath = f"temp_{uploaded.name}"
+    with open(filepath, "wb") as f:
+        f.write(uploaded.getbuffer())
 
-    selected_sheets = None
+    ext = os.path.splitext(filepath)[1].lower()
+
+    tables = []
+
     if ext in [".xlsx", ".xls"]:
-        xl = pd.ExcelFile(file_path, engine="openpyxl")
-        st.subheader("Select Sheets")
-        selected_sheets = st.multiselect("Sheets:", xl.sheet_names, xl.sheet_names)
+        xl = pd.ExcelFile(filepath, engine="openpyxl")
 
-        if not selected_sheets:
-            st.warning("Select at least 1 sheet.")
-            st.stop()
+        selected = st.multiselect("Select Sheets", xl.sheet_names, xl.sheet_names)
 
-    st.info("Extracting tables...")
+        for sheet in selected:
+            df_raw = xl.parse(sheet, header=None, dtype=object)
+            cleaned = clean_excel_table(df_raw, sheet, filepath, debug=debug_mode)
+            if not cleaned.empty:
+                tables.append(cleaned)
 
-    tables = (
-        read_excel_file(file_path, selected_sheets)
-        if ext in [".xlsx", ".xls"]
-        else read_pdf_file(file_path)
-    )
+    else:
+        tables = read_pdf_file(filepath)
 
-    st.success(f"Extracted {len(tables)} table(s)")
+    st.success(f"Extracted {len(tables)} tables")
 
-    classified = {
-        "Balance Sheet": [],
-        "Income Statement": [],
-        "Cash Flow Statement": [],
-        "Other": []
-    }
+    groups = {"Balance Sheet": [], "Income Statement": [],
+              "Cash Flow Statement": [], "Other": []}
 
     for i, df in enumerate(tables, start=1):
         st.subheader(f"Table {i}")
         st.dataframe(df, use_container_width=True)
 
-        classified[classify_statement(df)].append(df)
+        groups[classify(df)].append(df)
 
-    st.markdown("## Summary")
-    for name, group in classified.items():
-        st.write(f"**{name}: {len(group)} table(s)**")
+    # Summary
+    st.header("Summary")
+    for k, v in groups.items():
+        st.write(f"**{k}: {len(v)} tables**")
 
-    excel_file = to_excel(classified)
-
-    st.download_button(
-        "📥 Download Extracted Tables",
-        data=excel_file,
-        file_name="Extracted_Financial_Statements.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    download = to_excel(groups)
+    st.download_button("📥 Download Extracted Tables",
+                       data=download,
+                       file_name="Extracted_Financials.xlsx")
