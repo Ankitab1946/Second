@@ -9,40 +9,64 @@ def is_light_blue(cell):
     # Assuming light blue is 'FFD3D3D3' or similar; inspect actual file for RGB
     return cell.fill.fgColor.rgb == 'FFD3D3D3'
 
-# Function to process the sheet and flatten it
+# Function to get merged range for a cell
+def get_merged_range(sheet, cell):
+    for merged_range in sheet.merged_cells.ranges:
+        if cell.coordinate in merged_range:
+            return merged_range
+    return None
+
+# Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
     headers = {}
     vertical_headings = []
     data_rows = []  # To store data for each vertical heading
     
-    # Step 1: Process A1-A3 (combine and wrap text)
+    # Step 1: Process A1-A3 (combine and wrap text) - Keep as is
     a1_text = sheet['A1'].value or ""
     a2_text = sheet['A2'].value or ""
     a3_text = sheet['A3'].value or ""
     combined_a1 = f"{a1_text} {a2_text} {a3_text}".strip()
-    headers['A'] = combined_a1  # Use column letter as key
+    headers['A'] = combined_a1
     
-    # Step 2: Process D1-H1 ('Historical Annuals')
-    parent_d = sheet['D1'].value or "Historical Annuals"
-    years = ['2020', '2021', '2022', '2023', '2024']
-    for i, col in enumerate(['D', 'E', 'F', 'G', 'H']):
-        headers[col] = f"{parent_d}_{years[i]}"
+    # Dynamic Header Construction: Scan for merged cells and build hierarchies
+    processed_cols = set()  # To avoid reprocessing merged columns
+    for row in range(1, 4):  # Check rows 1-3 for headers
+        for col in range(1, sheet.max_column + 1):
+            col_letter = get_column_letter(col)
+            cell = sheet[f'{col_letter}{row}']
+            if col_letter in processed_cols or cell.value in [None, 'Comments']:
+                continue
+            merged_range = get_merged_range(sheet, cell)
+            if merged_range:
+                # Parent header
+                parent = cell.value or ""
+                # Get child cells (next row in the merged columns)
+                child_row = row + 1
+                child_values = []
+                for merged_col in range(merged_range.min_col, merged_range.max_col + 1):
+                    merged_col_letter = get_column_letter(merged_col)
+                    child_cell = sheet[f'{merged_col_letter}{child_row}']
+                    if child_cell.value:
+                        child_values.append(child_cell.value)
+                    processed_cols.add(merged_col_letter)
+                
+                # Build headers for each column in the merge
+                for i, merged_col in enumerate(range(merged_range.min_col, merged_range.max_col + 1)):
+                    merged_col_letter = get_column_letter(merged_col)
+                    if i < len(child_values):
+                        headers[merged_col_letter] = f"{parent}_{child_values[i]}"
+                    else:
+                        headers[merged_col_letter] = parent  # Fallback if no child
+            else:
+                # Single cell header (if not merged)
+                if cell.value and cell.value not in ['Comments']:
+                    headers[col_letter] = cell.value
     
-    # Step 4: Process O1-Q1 ('Historical Interims')
-    parent_o = sheet['O1'].value or "Historical Interims"
-    headers['O'] = "Historical Interims_1H_2024"
-    headers['P'] = "Historical Interims_1H_2025"
-    headers['Q'] = "Historical Interims_LTM"
-    
-    # Step 5: Process Y1-Z1 ('CAGRARS')
-    parent_y = sheet['Y1'].value or "CAGRARS"
-    headers['Y'] = "CAGRARS_2020_2024"
-    headers['Z'] = "CAGRARS_2024_2027"
-    
-    # Now process rows and extract data
+    # Now process rows dynamically for vertical headings and data
     current_parent = None
     current_child = None
-    row_data = {}  # Temp dict for each row's data
+    row_data = {}
     
     for row in range(4, sheet.max_row + 1):
         cell_a = sheet[f'A{row}']
@@ -54,9 +78,9 @@ def process_sheet(sheet):
             current_parent = cell_a.value.strip()
             current_child = None
             vertical_headings.append(current_parent)
-            row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys()}
+            row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys() if col in headers}
         else:
-            if cell_a.value and cell_a.value.strip():
+            if cell_a.value and cell_a.value.strip() and cell_a.value not in ['Comments']:
                 if current_child is None:
                     current_child = cell_a.value.strip()
                     heading = f"{current_parent}_{current_child}"
@@ -64,13 +88,16 @@ def process_sheet(sheet):
                     grandchild = cell_a.value.strip()
                     heading = f"{current_parent}_{current_child}_{grandchild}"
                 vertical_headings.append(heading)
-                row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys()}
+                row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys() if col in headers}
                 data_rows.append(row_data)
                 row_data = {}
     
     # Create DataFrame
-    df = pd.DataFrame(data_rows, index=vertical_headings[:len(data_rows)])
-    df.columns = [headers[col] for col in df.columns]
+    if data_rows:
+        df = pd.DataFrame(data_rows, index=vertical_headings[:len(data_rows)])
+        df.columns = [headers.get(col, col) for col in df.columns]  # Use header names
+    else:
+        df = pd.DataFrame()  # Empty if no data
     return df
 
 # Streamlit App
