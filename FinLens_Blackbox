@@ -1,0 +1,107 @@
+import streamlit as st
+import openpyxl
+import pandas as pd
+from openpyxl.utils import get_column_letter
+import io
+
+# Function to check if a cell has light blue background (adjust RGB if needed)
+def is_light_blue(cell):
+    # Assuming light blue is 'FFD3D3D3' or similar; inspect actual file for RGB
+    return cell.fill.fgColor.rgb == 'FFD3D3D3'
+
+# Function to process the sheet and flatten it
+def process_sheet(sheet):
+    headers = {}
+    vertical_headings = []
+    data_rows = []  # To store data for each vertical heading
+    
+    # Step 1: Process A1-A3 (combine and wrap text)
+    a1_text = sheet['A1'].value or ""
+    a2_text = sheet['A2'].value or ""
+    a3_text = sheet['A3'].value or ""
+    combined_a1 = f"{a1_text} {a2_text} {a3_text}".strip()
+    headers['A'] = combined_a1  # Use column letter as key
+    
+    # Step 2: Process D1-H1 ('Historical Annuals')
+    parent_d = sheet['D1'].value or "Historical Annuals"
+    years = ['2020', '2021', '2022', '2023', '2024']
+    for i, col in enumerate(['D', 'E', 'F', 'G', 'H']):
+        headers[col] = f"{parent_d}_{years[i]}"
+    
+    # Step 4: Process O1-Q1 ('Historical Interims')
+    parent_o = sheet['O1'].value or "Historical Interims"
+    headers['O'] = "Historical Interims_1H_2024"
+    headers['P'] = "Historical Interims_1H_2025"
+    headers['Q'] = "Historical Interims_LTM"
+    
+    # Step 5: Process Y1-Z1 ('CAGRARS')
+    parent_y = sheet['Y1'].value or "CAGRARS"
+    headers['Y'] = "CAGRARS_2020_2024"
+    headers['Z'] = "CAGRARS_2024_2027"
+    
+    # Now process rows and extract data
+    current_parent = None
+    current_child = None
+    row_data = {}  # Temp dict for each row's data
+    
+    for row in range(4, sheet.max_row + 1):
+        cell_a = sheet[f'A{row}']
+        if is_light_blue(cell_a) and cell_a.value and 'Forecast based on research' not in str(cell_a.value):
+            # Save previous row if exists
+            if row_data:
+                data_rows.append(row_data)
+                row_data = {}
+            current_parent = cell_a.value.strip()
+            current_child = None
+            vertical_headings.append(current_parent)
+            row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys()}
+        else:
+            if cell_a.value and cell_a.value.strip():
+                if current_child is None:
+                    current_child = cell_a.value.strip()
+                    heading = f"{current_parent}_{current_child}"
+                else:
+                    grandchild = cell_a.value.strip()
+                    heading = f"{current_parent}_{current_child}_{grandchild}"
+                vertical_headings.append(heading)
+                row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys()}
+                data_rows.append(row_data)
+                row_data = {}
+    
+    # Create DataFrame
+    df = pd.DataFrame(data_rows, index=vertical_headings[:len(data_rows)])
+    df.columns = [headers[col] for col in df.columns]
+    return df
+
+# Streamlit App
+st.title("Excel Flattener App")
+st.write("Upload an Excel file, select a tab, and download the flattened data.")
+
+uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
+
+if uploaded_file is not None:
+    try:
+        wb = openpyxl.load_workbook(uploaded_file)
+        sheet_names = wb.sheetnames
+        selected_sheet = st.selectbox("Select a tab", sheet_names)
+        
+        if st.button("Process and Flatten"):
+            sheet = wb[selected_sheet]
+            flattened_df = process_sheet(sheet)
+            
+            st.write("Flattened Data Preview:")
+            st.dataframe(flattened_df)
+            
+            # Prepare CSV for download
+            csv_buffer = io.StringIO()
+            flattened_df.to_csv(csv_buffer)
+            csv_data = csv_buffer.getvalue()
+            
+            st.download_button(
+                label="Download Flattened Data as CSV",
+                data=csv_data,
+                file_name=f"{selected_sheet}_flattened.csv",
+                mime="text/csv"
+            )
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
