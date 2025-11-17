@@ -3,235 +3,233 @@ import pandas as pd
 import openpyxl
 from io import BytesIO
 
-st.set_page_config(page_title="Financials Header & Row Flattener (Fixed)", layout="wide")
+st.set_page_config(page_title="Financials Header & Row Flattener — FINAL", layout="wide")
 
-# -------------------------
-# Helpers
-# -------------------------
+# ===========================================================
+# HELPERS
+# ===========================================================
+
 def safe_cell_value(ws, row, col):
     v = ws.cell(row=row, column=col).value
     return "" if v is None else str(v).strip()
 
+
+def clean_header_text(h):
+    """
+    Removes #REF!, whitespace, double underscores, leading/trailing underscores.
+    """
+    if h is None:
+        return ""
+    h = str(h)
+    h = h.replace("#REF!", "")
+    while "__" in h:
+        h = h.replace("__", "_")
+    return h.strip("_ ").strip()
+
+
+def make_unique(headers):
+    """Ensure no duplicate column names remain."""
+    seen = {}
+    out = []
+    for h in headers:
+        h = h or "Column"
+        if h not in seen:
+            seen[h] = 0
+            out.append(h)
+        else:
+            seen[h] += 1
+            out.append(f"{h}_{seen[h]}")
+    return out
+
+
 def is_fill_blue(cell):
     """
-    Robust check for 'light blue' fills. openpyxl can represent colors in various ways.
-    We'll check:
-      - rgb string (like 'FFDBEEF3' or 'DBEEF3' or 'FF' prefixed)
-      - indexed/theme: fallback to checking patternFill or presence of fill at all.
-    This is heuristic — adjust hex palette if your blue shade differs.
+    Detects if a cell is light blue based on its fill color.
+    Handles multiple hex formats.
     """
     try:
-        fill = cell.fill
-        if not fill:
+        fg = cell.fill.fgColor
+        if fg is None:
             return False
-        fg = fill.fgColor
-        if not fg:
-            return False
-        # rgb property may be None
-        rgb = getattr(fg, "rgb", None)
+        rgb = fg.rgb
         if rgb:
-            # Normalize: sometimes rgb like 'FFDBEEF3' or 'DBEEF3'
-            rgb_norm = rgb.upper().lstrip("0X")
-            # target suffixes we consider "blue-ish"
-            blue_suffixes = ("DCE6F1", "DBEEF3", "C6D9F1", "EAF3FF", "DBECFF")
-            for s in blue_suffixes:
-                if rgb_norm.endswith(s):
-                    return True
-        # If indexed or theme color present, attempt to treat as non-blue unless explicit rgb matched
+            rgb = rgb.upper().replace("0X", "").replace("FF", "")
+            blue_suffixes = ["DCE6F1", "DBEEF3", "C6D9F1", "EAF3FF", "DBECFF"]
+            return any(rgb.endswith(s) for s in blue_suffixes)
         return False
-    except Exception:
+    except:
         return False
 
-# -------------------------
-# Header extraction (3 rows)
-# -------------------------
+
+# ===========================================================
+# STEP 1 — READ & FLATTEN HEADER
+# ===========================================================
+
 def extract_flattened_header(ws, header_rows=3):
     max_cols = ws.max_column
 
-    # initialize header matrix: header_rows x max_cols
+    # Initialize empty header matrix
     header_matrix = [["" for _ in range(max_cols)] for _ in range(header_rows)]
 
-    # read values into header_matrix
+    # Fill matrix with row 1–3 values
     for r in range(1, header_rows + 1):
         for c in range(1, max_cols + 1):
             header_matrix[r - 1][c - 1] = safe_cell_value(ws, r, c)
 
-    # Propagate merged cell values INTO header_matrix but ONLY for rows within header_rows
-    for merge_range in ws.merged_cells.ranges:
-        # merge_range.min_row may be > header_rows -> skip
-        if merge_range.max_row < 1 or merge_range.min_row > header_rows:
+    # Propagate merged cells only within row 1–3
+    for merge in ws.merged_cells.ranges:
+        if merge.min_row > header_rows:
             continue
-        val = safe_cell_value(ws, merge_range.min_row, merge_range.min_col)
-        # clamp rows to header_rows
-        r_start = max(merge_range.min_row, 1)
-        r_end = min(merge_range.max_row, header_rows)
-        for r in range(r_start, r_end + 1):
-            for c in range(merge_range.min_col, merge_range.max_col + 1):
+        val = safe_cell_value(ws, merge.min_row, merge.min_col)
+        for r in range(max(1, merge.min_row), min(header_rows, merge.max_row) + 1):
+            for c in range(merge.min_col, merge.max_col + 1):
                 if 1 <= c <= max_cols:
                     header_matrix[r - 1][c - 1] = val
 
-    # build flattened headers for each column
+    # Combine header levels
     final_headers = []
     for col in range(max_cols):
-        h_parts = []
         h1 = header_matrix[0][col].strip()
-        h2 = header_matrix[1][col].strip() if header_rows >= 2 else ""
-        h3 = header_matrix[2][col].strip() if header_rows >= 3 else ""
+        h2 = header_matrix[1][col].strip()
+        h3 = header_matrix[2][col].strip()
 
-        # Special: first column combine A1+A2+A3 into one header (as requested)
+        # Special A1+A2+A3 rule
         if col == 0:
-            combined = "_".join(p for p in (h1, h2, h3) if p).strip("_")
-            final_headers.append(combined if combined else f"col_{col+1}")
+            h = "_".join([x for x in (h1, h2, h3) if x])
+            final_headers.append(h if h else f"Column_{col+1}")
             continue
 
-        # Ignore 'Comments' as parent header
-        if h1 and h1.lower() == "comments":
-            # keep an empty identifiable header so column counts remain aligned
+        if h1.lower() == "comments":
             final_headers.append("Comments")
             continue
 
-        # general combine non-empty levels with underscore
-        for part in (h1, h2, h3):
-            if part:
-                h_parts.append(part)
-        header_name = "_".join(h_parts).strip("_")
-        final_headers.append(header_name if header_name else f"col_{col+1}")
+        parts = [p for p in (h1, h2, h3) if p]
+        h = "_".join(parts).strip("_")
+        final_headers.append(h if h else f"Column_{col+1}")
 
-    return final_headers
+    # Clean
+    cleaned = [clean_header_text(h) for h in final_headers]
 
-# -------------------------
-# Build dataframe rows explicitly from sheet (starting row 4)
-# -------------------------
+    # Replace blanks
+    cleaned = [(h if h else f"Column_{i+1}") for i, h in enumerate(cleaned)]
+
+    # Enforce uniqueness
+    cleaned = make_unique(cleaned)
+
+    return cleaned
+
+
+# ===========================================================
+# STEP 2 — BUILD DATAFRAME FROM SHEET
+# ===========================================================
+
 def build_dataframe_from_ws(ws, headers, start_row=4):
     max_cols = ws.max_column
     max_row = ws.max_row
+    data = []
 
-    rows = []
     for r in range(start_row, max_row + 1):
         row_vals = []
-        # read exactly max_cols cells to match header length
         for c in range(1, max_cols + 1):
-            row_vals.append(ws.cell(row=r, column=c).value)
-        rows.append(row_vals)
+            v = ws.cell(row=r, column=c).value
+            row_vals.append(v)
+        data.append(row_vals)
 
-    df = pd.DataFrame(rows, columns=headers)
-    # reset index for easier mapping with ws (df idx 0 corresponds to Excel row start_row)
+    df = pd.DataFrame(data, columns=headers)
     return df
 
-# -------------------------
-# Build vertical hierarchy labels
-# -------------------------
+
+# ===========================================================
+# STEP 3 — BUILD VERTICAL HIERARCHY (PARENT / CHILD)
+# ===========================================================
+
 def build_vertical_labels(df, ws, data_start_row=4):
-    parent_for_index = {}
+    parent_map = {}
     last_parent = ""
 
     for idx in range(len(df)):
         excel_row = data_start_row + idx
-        # first column text
-        cell_text = safe_cell_value(ws, excel_row, 1)
-        normalized = cell_text.strip()
+        text = safe_cell_value(ws, excel_row, 1)
 
-        # ignore obvious note rows
-        if normalized.lower() in ("", "forecast based on research"):
-            parent_for_index[idx] = last_parent
+        if text.lower() in ["", "forecast based on research"]:
+            parent_map[idx] = last_parent
             continue
 
-        # detect blue fill on column A cell
         cell = ws.cell(row=excel_row, column=1)
-        if is_fill_blue(cell):
-            last_parent = normalized
-            parent_for_index[idx] = last_parent
-        else:
-            parent_for_index[idx] = last_parent
 
-    # now build final label for each row
+        if is_fill_blue(cell):
+            last_parent = text
+            parent_map[idx] = text
+        else:
+            parent_map[idx] = last_parent
+
     final_labels = []
     for idx in range(len(df)):
-        parent = parent_for_index.get(idx, "")
-        main = safe_cell_value(ws, data_start_row + idx, 1)
+        text = safe_cell_value(ws, data_start_row + idx, 1)
+        parent = parent_map.get(idx, "")
 
-        if main.strip().lower() in ("", "forecast based on research"):
-            final_labels.append("")  # keep blank for ignored rows
+        if text.lower() in ["", "forecast based on research"]:
+            final_labels.append("")
             continue
 
-        # if row text looks like a "% change" variant -> try to attach to previous non-empty child
-        low = main.lower()
-        if "% change" in low or "%change" in low or low.strip().endswith("%"):
-            # find previous non-empty child within df rows
+        low = text.lower()
+        if "%change" in low or "% change" in low or low.endswith("%"):
             prev_child = ""
-            # search backwards for the previous non-empty non-parent row label text
-            for back in range(idx - 1, -1, -1):
-                candidate = safe_cell_value(ws, data_start_row + back, 1)
-                if candidate.strip() and candidate.strip().lower() not in ("forecast based on research", ""):
-                    prev_child = candidate.strip()
+            for j in range(idx - 1, -1, -1):
+                cand = safe_cell_value(ws, data_start_row + j, 1)
+                if cand.strip():
+                    prev_child = cand
                     break
-            if parent:
-                if prev_child:
-                    final_labels.append(f"{parent}_{prev_child}_%Change")
-                else:
-                    final_labels.append(f"{parent}_%Change")
+            if parent and prev_child:
+                final_labels.append(f"{parent}_{prev_child}_%Change")
+            elif prev_child:
+                final_labels.append(f"{prev_child}_%Change")
             else:
-                # no parent found; just keep the child label
-                if prev_child:
-                    final_labels.append(f"{prev_child}_%Change")
-                else:
-                    final_labels.append("%Change")
+                final_labels.append("%Change")
         else:
-            # normal parent_child
-            if parent:
-                final_labels.append(f"{parent}_{main.strip()}")
-            else:
-                final_labels.append(main.strip())
+            final_labels.append(f"{parent}_{text}" if parent else text)
 
     return final_labels
 
-# -------------------------
-# Streamlit UI
-# -------------------------
-st.title("📊 Financials Header & Row Flattener — Fixed")
 
-uploaded = st.file_uploader("Upload Financials.xlsx", type=["xlsx"])
+# ===========================================================
+# STREAMLIT UI
+# ===========================================================
+
+st.title("📊 FINAL: Financials Header & Row Flattener")
+
+uploaded = st.file_uploader("Upload Financials Excel", type=["xlsx"])
+
 if uploaded:
-    try:
-        wb = openpyxl.load_workbook(uploaded, data_only=True)
-    except Exception as e:
-        st.error(f"Failed to open workbook: {e}")
-        st.stop()
-
+    wb = openpyxl.load_workbook(uploaded, data_only=True)
     sheets = wb.sheetnames
-    sheet_name = st.selectbox("Select sheet", sheets)
+
+    sheet_name = st.selectbox("Select Sheet", sheets)
 
     if sheet_name:
         ws = wb[sheet_name]
-        st.success(f"Loaded sheet: {sheet_name} (rows: {ws.max_row}, cols: {ws.max_column})")
+        st.success(f"Loaded: {sheet_name}")
 
-        # Extract headers (safe)
-        headers = extract_flattened_header(ws, header_rows=3)
-        st.subheader("Flattened headers (first 50 shown)")
-        st.write(headers[:50])
+        st.subheader("Extracting & Cleaning Headers...")
+        headers = extract_flattened_header(ws)
+        st.write(headers)
 
-        # Build dataframe explicitly from cells to ensure column count matches headers
         df = build_dataframe_from_ws(ws, headers, start_row=4)
 
-        st.subheader("Raw extracted data (first 10 rows)")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.subheader("Building Vertical Hierarchy...")
+        vertical_labels = build_vertical_labels(df, ws, data_start_row=4)
+        df.insert(0, "Final_Row_Label", vertical_labels)
 
-        # Vertical hierarchy
-        final_labels = build_vertical_labels(df, ws, data_start_row=4)
-        df.insert(0, "Final_Row_Label", final_labels)
+        st.subheader("Flattened Output Preview")
+        st.dataframe(df.head(30), use_container_width=True)
 
-        st.subheader("Final flattened output (first 20 rows)")
-        st.dataframe(df.head(20), use_container_width=True)
-
-        # Download
-        towrite = BytesIO()
-        with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Flattened")
-        towrite.seek(0)
 
         st.download_button(
             "⬇️ Download Flattened Excel",
-            towrite,
-            file_name="Flattened_Financials_fixed.xlsx",
+            output.getvalue(),
+            "Flattened_Financials_Final.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
