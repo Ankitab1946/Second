@@ -32,17 +32,26 @@ def make_unique(headers_list):
             unique_headers.append(header)
     return unique_headers
 
-# Function to check if a row is a parent (A has value, rest blank)
+# Function to check if a row is a parent (A has value, rest blank - treating "Restated" as blank)
 def is_parent_row_by_blanks(sheet, row, max_col):
     cell_a = sheet[f'A{row}']
     if not cell_a.value or not cell_a.value.strip():
         return False
-    # Check if all other columns are blank
+    # Check if all other columns are blank (treating "Restated" as blank)
     for col in range(2, max_col + 1):  # Start from B (column 2)
         col_letter = get_column_letter(col)
-        if sheet[f'{col_letter}{row}'].value:
-            return False  # Found a non-blank cell
+        cell_value = sheet[f'{col_letter}{row}'].value
+        # Treat "Restated" as blank
+        if cell_value and str(cell_value).strip().lower() != "restated":
+            return False  # Found a non-blank cell (that's not "Restated")
     return True
+
+# Function to check if a row is hidden
+def is_row_hidden(sheet, row):
+    try:
+        return sheet.row_dimensions[row].hidden
+    except:
+        return False
 
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
@@ -98,21 +107,19 @@ def process_sheet(sheet):
     current_child = None
     
     for row in range(4, sheet.max_row + 1):
+        # Skip hidden rows
+        if is_row_hidden(sheet, row):
+            continue
+            
         cell_a = sheet[f'A{row}']
-        cell_d = sheet[f'D{row}']  # Check column D for "Restated"
         cell_a_value = cell_a.value
-        cell_d_value = cell_d.value
         
         # Skip rows starting with "Forecast based on"
         if cell_a_value and str(cell_a_value).strip().startswith("Forecast based on"):
             continue
         
-        # Check if column D contains "Restated" - if yes, treat as data row (not parent)
-        has_restated = cell_d_value and str(cell_d_value).strip().lower() == "restated"
-        
-        # Check if this is a parent row (light blue OR A populated with rest blank)
-        # BUT exclude if column D has "Restated"
-        is_parent = (is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)) and not has_restated
+        # Check if this is a parent row (light blue OR A populated with rest blank, treating "Restated" as blank)
+        is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
         
         if is_parent and cell_a_value and cell_a_value.strip():
             # This is a parent row
