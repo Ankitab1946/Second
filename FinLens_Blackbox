@@ -199,12 +199,20 @@ def process_sheet(sheet):
                 if col not in blank_columns and headers[col]:  # Skip blank columns
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
-        elif leading_spaces >= 4:
-            # Grandchild (4+ spaces) - child of the immediate child
-            if current_child:
-                heading = f"{current_parent}_{current_child}_{stripped_text}"
-            else:
-                heading = f"{current_parent}_{stripped_text}"
+        elif leading_spaces == 1:
+            # Child (1 space) - direct child of parent
+            current_child = stripped_text
+            heading = f"{current_parent}_{current_child}"
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
+        elif leading_spaces == 2:
+            # Also a child (2 spaces) - direct child of parent, resets current_child
+            current_child = stripped_text
+            heading = f"{current_parent}_{current_child}"
             vertical_headings.append(heading)
             row_data = {}
             for col in range(len(headers)):
@@ -212,9 +220,11 @@ def process_sheet(sheet):
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
         else:
-            # Child (1-3 spaces) - direct child of parent
-            current_child = stripped_text
-            heading = f"{current_parent}_{current_child}"
+            # Grandchild (3+ spaces) - child of the most recent child
+            if current_child:
+                heading = f"{current_parent}_{current_child}_{stripped_text}"
+            else:
+                heading = f"{current_parent}_{stripped_text}"
             vertical_headings.append(heading)
             row_data = {}
             for col in range(len(headers)):
