@@ -2,6 +2,7 @@ import streamlit as st
 import openpyxl
 import pandas as pd
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 import io
 
 # Function to check if a cell has light blue background (adjust RGB if needed)
@@ -101,6 +102,65 @@ def should_ignore_row(cell_a_value, header_texts):
     
     return False
 
+# Function to format Excel output with styling
+def format_excel_output(df, company_info):
+    # Create a new workbook
+    output = io.BytesIO()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Flattened Data"
+    
+    # Add company info in A1
+    ws['A1'] = company_info
+    ws['A1'].alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
+    
+    # Define styles
+    dark_blue_fill = PatternFill(start_color="00003366", end_color="00003366", fill_type="solid")
+    white_font = Font(color="FFFFFF", bold=True)
+    wrap_alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Write column headers (starting from row 2)
+    for col_idx, col_name in enumerate(df.columns, start=1):
+        cell = ws.cell(row=2, column=col_idx, value=col_name)
+        cell.fill = dark_blue_fill
+        cell.font = white_font
+        cell.alignment = wrap_alignment
+        cell.border = thin_border
+    
+    # Write data rows (starting from row 3)
+    for row_idx, (index_val, row_data) in enumerate(df.iterrows(), start=3):
+        # Write row header (vertical heading)
+        cell = ws.cell(row=row_idx, column=1, value=index_val)
+        cell.fill = dark_blue_fill
+        cell.font = white_font
+        cell.alignment = wrap_alignment
+        cell.border = thin_border
+        
+        # Write data values
+        for col_idx, value in enumerate(row_data, start=2):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = wrap_alignment
+            cell.border = thin_border
+    
+    # Apply table style (medium9 is similar to Table Grid)
+    max_row = 2 + len(df)
+    max_col = len(df.columns)
+    
+    # Adjust column widths
+    for col_idx in range(1, max_col + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 15
+    
+    # Save workbook
+    wb.save(output)
+    output.seek(0)
+    return output
+
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
     headers = [None] * sheet.max_column  # List for headers in column order (0-indexed)
@@ -111,7 +171,7 @@ def process_sheet(sheet):
     a1_text = sheet['A1'].value or ""
     a2_text = sheet['A2'].value or ""
     a3_text = sheet['A3'].value or ""
-    combined_a1 = f"{a1_text} {a2_text} {a3_text}".strip()
+    combined_a1 = f"{a1_text}\n{a2_text}\n{a3_text}".strip()
     headers[0] = combined_a1  # Column A is index 0
     
     # Dynamic Header Construction: Scan for merged cells and build hierarchies
@@ -247,7 +307,8 @@ def process_sheet(sheet):
         df.columns = filtered_headers[:len(df.columns)]
     else:
         df = pd.DataFrame()  # Empty if no data
-    return df
+    
+    return df, combined_a1
 
 # Streamlit App
 st.title("Excel Flattener App")
@@ -264,21 +325,19 @@ if uploaded_file is not None:
         
         if st.button("Process and Flatten"):
             sheet = wb[selected_sheet]
-            flattened_df = process_sheet(sheet)
+            flattened_df, company_info = process_sheet(sheet)
             
             st.write("Flattened Data Preview:")
             st.dataframe(flattened_df)
             
-            # Prepare CSV for download
-            csv_buffer = io.StringIO()
-            flattened_df.to_csv(csv_buffer)
-            csv_data = csv_buffer.getvalue()
+            # Format and prepare Excel for download
+            formatted_excel = format_excel_output(flattened_df, company_info)
             
             st.download_button(
-                label="Download Flattened Data as CSV",
-                data=csv_data,
-                file_name=f"{selected_sheet}_flattened.csv",
-                mime="text/csv"
+                label="Download Formatted Excel",
+                data=formatted_excel,
+                file_name=f"{selected_sheet}_flattened_formatted.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
