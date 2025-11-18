@@ -79,8 +79,8 @@ def should_ignore_row(cell_a_value, header_texts):
         return False
     text = str(cell_a_value).strip().lower()
     
-    # Ignore rows starting with "forecast"
-    if text.startswith("forecast"):
+    # Ignore rows starting with "forecast based on"
+    if text.startswith("forecast based on"):
         return True
     
     # Ignore rows that match header texts (duplicate headers in data)
@@ -94,8 +94,8 @@ def is_invalid_header(value):
     if not value:
         return True
     text = str(value).strip().lower()
-    # Check for Excel error values
-    if any(error in text for error in ['#ref!', '#n/a', '#value!', '#div/0!', '#name?', '#null!', '#num!', 'forecast']):
+    # Check for Excel error values (but NOT "forecast" anymore)
+    if any(error in text for error in ['#ref!', '#n/a', '#value!', '#div/0!', '#name?', '#null!', '#num!']):
         return True
     return False
 
@@ -121,6 +121,8 @@ def format_excel_output(df, company_info):
     ws.title = "Flattened Data"
     
     # Define styles
+    # Changed horizontal header color to a lighter blue
+    light_blue_fill = PatternFill(start_color="004472C4", end_color="004472C4", fill_type="solid")
     dark_blue_fill = PatternFill(start_color="00003366", end_color="00003366", fill_type="solid")
     white_font = Font(color="FFFFFF", bold=True)
     wrap_alignment = Alignment(wrap_text=True, vertical='center', horizontal='center')
@@ -131,21 +133,21 @@ def format_excel_output(df, company_info):
         bottom=Side(style='thin')
     )
     
-    # Write column headers (starting from row 1)
+    # Write column headers (starting from row 1) with light blue background
     for col_idx, col_name in enumerate(df.columns, start=1):
         # Replace first column header with company info
         if col_idx == 1:
             cell = ws.cell(row=1, column=col_idx, value=company_info)
         else:
             cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.fill = dark_blue_fill
+        cell.fill = light_blue_fill  # Changed to light blue
         cell.font = white_font
         cell.alignment = wrap_alignment
         cell.border = thin_border
     
     # Write data rows (starting from row 2)
     for row_idx, (index_val, row_data) in enumerate(df.iterrows(), start=2):
-        # Write row header (vertical heading)
+        # Write row header (vertical heading) with dark blue
         cell = ws.cell(row=row_idx, column=1, value=index_val)
         cell.fill = dark_blue_fill
         cell.font = white_font
@@ -155,7 +157,7 @@ def format_excel_output(df, company_info):
         # Write data values
         for col_idx, (col_name, value) in enumerate(row_data.items(), start=2):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.alignment = wrap_alignment
+            cell.alignment = wrap_alignment  # Word wrap for data cells
             cell.border = thin_border
     
     # Adjust column widths
@@ -183,6 +185,7 @@ def process_sheet(sheet):
     processed_cols = set()
     header_texts = []
     
+    # First pass: identify merged ranges and their parent headers
     for row in range(1, 4):  # Check rows 1-3 for headers
         for col in range(1, sheet.max_column + 1):
             col_letter = get_column_letter(col)
@@ -200,42 +203,36 @@ def process_sheet(sheet):
             merged_range = get_merged_range(sheet, cell)
             if merged_range:
                 # Parent header
-                parent = cell.value or ""
+                parent = str(cell.value or "")
                 if not is_invalid_header(parent):
-                    header_texts.append(str(parent).strip())
+                    header_texts.append(parent.strip())
                 
-                # Get child cells (next row in the merged columns)
-                child_row = row + 1
-                child_values = []
+                # Check all rows in the header section for child values
+                # Look at rows 2 and 3 for potential child headers
                 for merged_col in range(merged_range.min_col, merged_range.max_col + 1):
                     merged_col_letter = get_column_letter(merged_col)
-                    child_cell = sheet[f'{merged_col_letter}{child_row}']
-                    child_val = child_cell.value
                     
-                    # Skip invalid child values
-                    if is_invalid_header(child_val):
-                        child_values.append("")
+                    # Try to find child header in row 2 or 3
+                    child_val = None
+                    for check_row in [2, 3]:
+                        check_cell = sheet[f'{merged_col_letter}{check_row}']
+                        if check_cell.value and not is_invalid_header(check_cell.value):
+                            child_val = str(check_cell.value)
+                            break
+                    
+                    if child_val:
+                        column_to_header[merged_col] = f"{parent}_{child_val}"
+                        header_texts.append(child_val.strip())
                     else:
-                        if child_val:
-                            child_values.append(child_val)
-                            header_texts.append(str(child_val).strip())
-                        else:
-                            child_values.append("")
+                        column_to_header[merged_col] = parent
+                    
                     processed_cols.add(merged_col)
-                
-                # Build headers for each column in the merge
-                for i, merged_col in enumerate(range(merged_range.min_col, merged_range.max_col + 1)):
-                    if i < len(child_values) and child_values[i]:
-                        column_to_header[merged_col] = f"{parent}_{child_values[i]}"
-                    else:
-                        # Skip columns with invalid headers
-                        if not is_invalid_header(parent):
-                            column_to_header[merged_col] = parent
             else:
                 # Single cell header (if not merged)
                 if cell.value and cell.value not in ['Comments'] and not is_invalid_header(cell.value):
                     column_to_header[col] = str(cell.value)
                     header_texts.append(str(cell.value).strip())
+                    processed_cols.add(col)
     
     # Set column A header
     column_to_header[1] = company_info
