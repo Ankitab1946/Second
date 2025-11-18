@@ -16,9 +16,22 @@ def get_merged_range(sheet, cell):
             return merged_range
     return None
 
+# Function to make header names unique by appending suffix if duplicates
+def make_unique(headers_list):
+    seen = {}
+    unique_headers = []
+    for header in headers_list:
+        if header in seen:
+            seen[header] += 1
+            unique_headers.append(f"{header}_{seen[header]}")
+        else:
+            seen[header] = 0
+            unique_headers.append(header)
+    return unique_headers
+
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
-    headers = {}
+    headers = [None] * sheet.max_column  # List for headers in column order (0-indexed)
     vertical_headings = []
     data_rows = []  # To store data for each vertical heading
     
@@ -27,7 +40,7 @@ def process_sheet(sheet):
     a2_text = sheet['A2'].value or ""
     a3_text = sheet['A3'].value or ""
     combined_a1 = f"{a1_text} {a2_text} {a3_text}".strip()
-    headers['A'] = combined_a1
+    headers[0] = combined_a1  # Column A is index 0
     
     # Dynamic Header Construction: Scan for merged cells and build hierarchies
     processed_cols = set()  # To avoid reprocessing merged columns
@@ -35,7 +48,7 @@ def process_sheet(sheet):
         for col in range(1, sheet.max_column + 1):
             col_letter = get_column_letter(col)
             cell = sheet[f'{col_letter}{row}']
-            if col_letter in processed_cols or cell.value in [None, 'Comments']:
+            if col in processed_cols or cell.value in [None, 'Comments']:
                 continue
             merged_range = get_merged_range(sheet, cell)
             if merged_range:
@@ -49,19 +62,21 @@ def process_sheet(sheet):
                     child_cell = sheet[f'{merged_col_letter}{child_row}']
                     if child_cell.value:
                         child_values.append(child_cell.value)
-                    processed_cols.add(merged_col_letter)
+                    processed_cols.add(merged_col)
                 
                 # Build headers for each column in the merge
                 for i, merged_col in enumerate(range(merged_range.min_col, merged_range.max_col + 1)):
-                    merged_col_letter = get_column_letter(merged_col)
                     if i < len(child_values):
-                        headers[merged_col_letter] = f"{parent}_{child_values[i]}"
+                        headers[merged_col - 1] = f"{parent}_{child_values[i]}"  # 0-indexed
                     else:
-                        headers[merged_col_letter] = parent  # Fallback if no child
+                        headers[merged_col - 1] = parent  # Fallback if no child
             else:
                 # Single cell header (if not merged)
                 if cell.value and cell.value not in ['Comments']:
-                    headers[col_letter] = cell.value
+                    headers[col - 1] = cell.value  # 0-indexed
+    
+    # Make headers unique
+    headers = make_unique(headers)
     
     # Now process rows dynamically for vertical headings and data
     current_parent = None
@@ -78,7 +93,7 @@ def process_sheet(sheet):
             current_parent = cell_a.value.strip()
             current_child = None
             vertical_headings.append(current_parent)
-            row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys() if col in headers}
+            row_data = {col: sheet[f'{get_column_letter(col+1)}{row}'].value for col in range(len(headers)) if headers[col]}
         else:
             if cell_a.value and cell_a.value.strip() and cell_a.value not in ['Comments']:
                 if current_child is None:
@@ -88,14 +103,14 @@ def process_sheet(sheet):
                     grandchild = cell_a.value.strip()
                     heading = f"{current_parent}_{current_child}_{grandchild}"
                 vertical_headings.append(heading)
-                row_data = {col: sheet[f'{col}{row}'].value for col in headers.keys() if col in headers}
+                row_data = {col: sheet[f'{get_column_letter(col+1)}{row}'].value for col in range(len(headers)) if headers[col]}
                 data_rows.append(row_data)
                 row_data = {}
     
     # Create DataFrame
-    if data_rows:
+    if data_rows and vertical_headings:
         df = pd.DataFrame(data_rows, index=vertical_headings[:len(data_rows)])
-        df.columns = [headers.get(col, col) for col in df.columns]  # Use header names
+        df.columns = headers[:len(df.columns)]  # Trim to match
     else:
         df = pd.DataFrame()  # Empty if no data
     return df
@@ -108,7 +123,8 @@ uploaded_file = st.file_uploader("Choose an Excel file", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        wb = openpyxl.load_workbook(uploaded_file)
+        # Load workbook with data_only=True to get computed values, not formulas
+        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
         sheet_names = wb.sheetnames
         selected_sheet = st.selectbox("Select a tab", sheet_names)
         
