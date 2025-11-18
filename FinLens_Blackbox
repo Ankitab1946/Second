@@ -110,10 +110,6 @@ def format_excel_output(df, company_info):
     ws = wb.active
     ws.title = "Flattened Data"
     
-    # Add company info in A1
-    ws['A1'] = company_info
-    ws['A1'].alignment = Alignment(wrap_text=True, vertical='top', horizontal='left')
-    
     # Define styles
     dark_blue_fill = PatternFill(start_color="00003366", end_color="00003366", fill_type="solid")
     white_font = Font(color="FFFFFF", bold=True)
@@ -125,16 +121,20 @@ def format_excel_output(df, company_info):
         bottom=Side(style='thin')
     )
     
-    # Write column headers (starting from row 2)
+    # Write column headers (starting from row 1)
     for col_idx, col_name in enumerate(df.columns, start=1):
-        cell = ws.cell(row=2, column=col_idx, value=col_name)
+        # Replace first column header with company info
+        if col_idx == 1:
+            cell = ws.cell(row=1, column=col_idx, value=company_info)
+        else:
+            cell = ws.cell(row=1, column=col_idx, value=col_name)
         cell.fill = dark_blue_fill
         cell.font = white_font
         cell.alignment = wrap_alignment
         cell.border = thin_border
     
-    # Write data rows (starting from row 3)
-    for row_idx, (index_val, row_data) in enumerate(df.iterrows(), start=3):
+    # Write data rows (starting from row 2)
+    for row_idx, (index_val, row_data) in enumerate(df.iterrows(), start=2):
         # Write row header (vertical heading)
         cell = ws.cell(row=row_idx, column=1, value=index_val)
         cell.fill = dark_blue_fill
@@ -148,11 +148,8 @@ def format_excel_output(df, company_info):
             cell.alignment = wrap_alignment
             cell.border = thin_border
     
-    # Apply table style (medium9 is similar to Table Grid)
-    max_row = 2 + len(df)
-    max_col = len(df.columns)
-    
     # Adjust column widths
+    max_col = len(df.columns)
     for col_idx in range(1, max_col + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 15
     
@@ -167,12 +164,13 @@ def process_sheet(sheet):
     vertical_headings = []
     data_rows = []  # To store data for each vertical heading
     
-    # Step 1: Process A1-A3 (combine and wrap text) - Keep as is
+    # Step 1: Process A1-A3 to create company info string
     a1_text = sheet['A1'].value or ""
     a2_text = sheet['A2'].value or ""
     a3_text = sheet['A3'].value or ""
-    combined_a1 = f"{a1_text}\n{a2_text}\n{a3_text}".strip()
-    headers[0] = combined_a1  # Column A is index 0
+    # Combine with underscores for the new header format
+    company_info = f"{a1_text}_{a2_text}_{a3_text}".strip("_")
+    headers[0] = company_info  # Column A header will be company info
     
     # Dynamic Header Construction: Scan for merged cells and build hierarchies
     processed_cols = set()  # To avoid reprocessing merged columns
@@ -308,7 +306,7 @@ def process_sheet(sheet):
     else:
         df = pd.DataFrame()  # Empty if no data
     
-    return df, combined_a1
+    return df, company_info
 
 # Streamlit App
 st.title("Excel Flattener App")
