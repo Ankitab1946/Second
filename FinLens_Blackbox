@@ -99,14 +99,20 @@ def process_sheet(sheet):
     
     for row in range(4, sheet.max_row + 1):
         cell_a = sheet[f'A{row}']
+        cell_d = sheet[f'D{row}']  # Check column D for "Restated"
         cell_a_value = cell_a.value
+        cell_d_value = cell_d.value
         
         # Skip rows starting with "Forecast based on"
         if cell_a_value and str(cell_a_value).strip().startswith("Forecast based on"):
             continue
         
+        # Check if column D contains "Restated" - if yes, treat as data row (not parent)
+        has_restated = cell_d_value and str(cell_d_value).strip().lower() == "restated"
+        
         # Check if this is a parent row (light blue OR A populated with rest blank)
-        is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
+        # BUT exclude if column D has "Restated"
+        is_parent = (is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)) and not has_restated
         
         if is_parent and cell_a_value and cell_a_value.strip():
             # This is a parent row
