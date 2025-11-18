@@ -19,19 +19,6 @@ def get_merged_range(sheet, cell):
             return merged_range
     return None
 
-# Function to make header names unique by appending suffix if duplicates
-def make_unique(headers_list):
-    seen = {}
-    unique_headers = []
-    for header in headers_list:
-        if header in seen:
-            seen[header] += 1
-            unique_headers.append(f"{header}_{seen[header]}")
-        else:
-            seen[header] = 0
-            unique_headers.append(header)
-    return unique_headers
-
 # Function to check if a value is truly blank (None, empty string, or whitespace only)
 def is_blank_value(value):
     if value is None:
@@ -143,13 +130,13 @@ def format_excel_output(df, company_info):
         cell.border = thin_border
         
         # Write data values
-        for col_idx, value in enumerate(row_data, start=2):
+        for col_idx, (col_name, value) in enumerate(row_data.items(), start=2):
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = wrap_alignment
             cell.border = thin_border
     
     # Adjust column widths
-    max_col = len(df.columns)
+    max_col = len(df.columns) + 1
     for col_idx in range(1, max_col + 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = 15
     
@@ -160,21 +147,18 @@ def format_excel_output(df, company_info):
 
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
-    headers = [None] * sheet.max_column  # List for headers in column order (0-indexed)
-    vertical_headings = []
-    data_rows = []  # To store data for each vertical heading
-    
     # Step 1: Process A1-A3 to create company info string
     a1_text = sheet['A1'].value or ""
     a2_text = sheet['A2'].value or ""
     a3_text = sheet['A3'].value or ""
     # Combine with underscores for the new header format
     company_info = f"{a1_text}_{a2_text}_{a3_text}".strip("_")
-    headers[0] = company_info  # Column A header will be company info
     
     # Dynamic Header Construction: Scan for merged cells and build hierarchies
-    processed_cols = set()  # To avoid reprocessing merged columns
-    header_texts = []  # Store header texts for duplicate detection
+    # Create a mapping of column index to header name
+    column_to_header = {}
+    processed_cols = set()
+    header_texts = []
     
     for row in range(1, 4):  # Check rows 1-3 for headers
         for col in range(1, sheet.max_column + 1):
@@ -193,35 +177,39 @@ def process_sheet(sheet):
                 for merged_col in range(merged_range.min_col, merged_range.max_col + 1):
                     merged_col_letter = get_column_letter(merged_col)
                     child_cell = sheet[f'{merged_col_letter}{child_row}']
-                    if child_cell.value:
-                        child_values.append(child_cell.value)
-                        header_texts.append(str(child_cell.value).strip())
+                    child_val = child_cell.value
+                    if child_val:
+                        child_values.append(child_val)
+                        header_texts.append(str(child_val).strip())
+                    else:
+                        child_values.append("")
                     processed_cols.add(merged_col)
                 
                 # Build headers for each column in the merge
                 for i, merged_col in enumerate(range(merged_range.min_col, merged_range.max_col + 1)):
-                    if i < len(child_values):
-                        headers[merged_col - 1] = f"{parent}_{child_values[i]}"  # 0-indexed
+                    if i < len(child_values) and child_values[i]:
+                        column_to_header[merged_col] = f"{parent}_{child_values[i]}"
                     else:
-                        headers[merged_col - 1] = parent  # Fallback if no child
+                        column_to_header[merged_col] = parent
             else:
                 # Single cell header (if not merged)
                 if cell.value and cell.value not in ['Comments']:
-                    headers[col - 1] = cell.value  # 0-indexed
+                    column_to_header[col] = str(cell.value)
                     header_texts.append(str(cell.value).strip())
     
-    # Make headers unique
-    headers = make_unique(headers)
+    # Set column A header
+    column_to_header[1] = company_info
     
     # Identify and mark blank columns for removal
     blank_columns = set()
     for col in range(1, sheet.max_column + 1):
         if is_column_blank(sheet, col):
-            blank_columns.add(col - 1)  # Store 0-indexed
+            blank_columns.add(col)
     
     # Now process rows dynamically for vertical headings and data
     current_parent = None
     current_child = None
+    rows_data = []
     
     for row in range(4, sheet.max_row + 1):
         # Skip hidden rows
@@ -246,65 +234,58 @@ def process_sheet(sheet):
         # Check if rest of row has values
         has_values = has_row_values(sheet, row, sheet.max_column)
         
-        # Check for parent row:
-        # 1. Light blue OR
-        # 2. 0 spaces AND no values in rest of row OR
-        # 3. 0 spaces AND "Restated" in column D
+        # Check for parent row
         is_parent = (
             is_light_blue(cell_a) or 
             (leading_spaces == 0 and not has_values) or 
             (leading_spaces == 0 and has_restated_in_d(sheet, row))
         )
         
+        # Build vertical heading
         if is_parent:
-            # This is a parent row
             current_parent = stripped_text
-            current_child = None  # Reset child for new parent
-            vertical_headings.append(current_parent)
-            row_data = {}
-            for col in range(len(headers)):
-                if col not in blank_columns and headers[col]:  # Skip blank columns
-                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-            data_rows.append(row_data)
+            current_child = None
+            vertical_heading = current_parent
         elif leading_spaces == 0 and has_values:
-            # Child (0 spaces with values in rest of row)
             current_child = stripped_text
-            heading = f"{current_parent}_{current_child}"
-            vertical_headings.append(heading)
-            row_data = {}
-            for col in range(len(headers)):
-                if col not in blank_columns and headers[col]:  # Skip blank columns
-                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-            data_rows.append(row_data)
+            vertical_heading = f"{current_parent}_{current_child}"
         elif leading_spaces >= 2 and has_values and current_child:
-            # Grandchild (2+ spaces with values in rest of row)
-            heading = f"{current_parent}_{current_child}_{stripped_text}"
-            vertical_headings.append(heading)
-            row_data = {}
-            for col in range(len(headers)):
-                if col not in blank_columns and headers[col]:  # Skip blank columns
-                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-            data_rows.append(row_data)
+            vertical_heading = f"{current_parent}_{current_child}_{stripped_text}"
         else:
-            # Default: treat as child if we have a parent
             if current_parent:
                 current_child = stripped_text
-                heading = f"{current_parent}_{current_child}"
-                vertical_headings.append(heading)
-                row_data = {}
-                for col in range(len(headers)):
-                    if col not in blank_columns and headers[col]:  # Skip blank columns
-                        row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-                data_rows.append(row_data)
+                vertical_heading = f"{current_parent}_{current_child}"
+            else:
+                continue
+        
+        # Extract data for this row - use actual column numbers
+        row_dict = {}
+        for col in range(1, sheet.max_column + 1):
+            if col not in blank_columns and col in column_to_header:
+                col_letter = get_column_letter(col)
+                row_dict[column_to_header[col]] = sheet[f'{col_letter}{row}'].value
+        
+        rows_data.append({'vertical_heading': vertical_heading, 'data': row_dict})
     
-    # Create DataFrame, filtering out blank columns
-    if data_rows and vertical_headings:
-        df = pd.DataFrame(data_rows, index=vertical_headings[:len(data_rows)])
-        # Filter headers to remove blank columns
-        filtered_headers = [headers[col] for col in range(len(headers)) if col not in blank_columns and headers[col]]
-        df.columns = filtered_headers[:len(df.columns)]
+    # Create DataFrame with proper column alignment
+    if rows_data:
+        # Get all unique column headers in order
+        all_headers = [column_to_header[col] for col in sorted(column_to_header.keys()) 
+                      if col not in blank_columns]
+        
+        # Build data rows
+        data_for_df = []
+        vertical_headings = []
+        for row_info in rows_data:
+            vertical_headings.append(row_info['vertical_heading'])
+            row_data = []
+            for header in all_headers:
+                row_data.append(row_info['data'].get(header))
+            data_for_df.append(row_data)
+        
+        df = pd.DataFrame(data_for_df, columns=all_headers, index=vertical_headings)
     else:
-        df = pd.DataFrame()  # Empty if no data
+        df = pd.DataFrame()
     
     return df, company_info
 
