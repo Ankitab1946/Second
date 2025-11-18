@@ -7,7 +7,10 @@ import io
 # Function to check if a cell has light blue background (adjust RGB if needed)
 def is_light_blue(cell):
     # Assuming light blue is 'FFD3D3D3' or similar; inspect actual file for RGB
-    return cell.fill.fgColor.rgb == 'FFD3D3D3'
+    try:
+        return cell.fill.fgColor.rgb == 'FFD3D3D3'
+    except:
+        return False
 
 # Function to get merged range for a cell
 def get_merged_range(sheet, cell):
@@ -28,6 +31,18 @@ def make_unique(headers_list):
             seen[header] = 0
             unique_headers.append(header)
     return unique_headers
+
+# Function to check if a row is a parent (A has value, rest blank)
+def is_parent_row_by_blanks(sheet, row, max_col):
+    cell_a = sheet[f'A{row}']
+    if not cell_a.value or not cell_a.value.strip():
+        return False
+    # Check if all other columns are blank
+    for col in range(2, max_col + 1):  # Start from B (column 2)
+        col_letter = get_column_letter(col)
+        if sheet[f'{col_letter}{row}'].value:
+            return False  # Found a non-blank cell
+    return True
 
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
@@ -81,31 +96,39 @@ def process_sheet(sheet):
     # Now process rows dynamically for vertical headings and data
     current_parent = None
     current_child = None
-    row_data = {}
     
     for row in range(4, sheet.max_row + 1):
         cell_a = sheet[f'A{row}']
-        if is_light_blue(cell_a) and cell_a.value and 'Forecast based on research' not in str(cell_a.value):
-            # Save previous row if exists
-            if row_data:
-                data_rows.append(row_data)
-                row_data = {}
-            current_parent = cell_a.value.strip()
-            current_child = None
+        cell_a_value = cell_a.value
+        
+        # Skip rows starting with "Forecast based on"
+        if cell_a_value and str(cell_a_value).strip().startswith("Forecast based on"):
+            continue
+        
+        # Check if this is a parent row (light blue OR A populated with rest blank)
+        is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
+        
+        if is_parent and cell_a_value and cell_a_value.strip():
+            # This is a parent row
+            current_parent = cell_a_value.strip()
+            current_child = None  # Reset child for new parent
             vertical_headings.append(current_parent)
             row_data = {col: sheet[f'{get_column_letter(col+1)}{row}'].value for col in range(len(headers)) if headers[col]}
+            data_rows.append(row_data)
         else:
-            if cell_a.value and cell_a.value.strip() and cell_a.value not in ['Comments']:
+            # This is a child or grandchild row
+            if cell_a_value and cell_a_value.strip():
                 if current_child is None:
-                    current_child = cell_a.value.strip()
+                    # First level child
+                    current_child = cell_a_value.strip()
                     heading = f"{current_parent}_{current_child}"
                 else:
-                    grandchild = cell_a.value.strip()
+                    # Second level (grandchild)
+                    grandchild = cell_a_value.strip()
                     heading = f"{current_parent}_{current_child}_{grandchild}"
                 vertical_headings.append(heading)
                 row_data = {col: sheet[f'{get_column_letter(col+1)}{row}'].value for col in range(len(headers)) if headers[col]}
                 data_rows.append(row_data)
-                row_data = {}
     
     # Create DataFrame
     if data_rows and vertical_headings:
