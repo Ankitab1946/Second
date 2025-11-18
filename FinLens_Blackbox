@@ -6,7 +6,6 @@ import io
 
 # Function to check if a cell has light blue background (adjust RGB if needed)
 def is_light_blue(cell):
-    # Assuming light blue is 'FFD3D3D3' or similar; inspect actual file for RGB
     try:
         return cell.fill.fgColor.rgb == 'FFD3D3D3'
     except:
@@ -40,11 +39,21 @@ def is_blank_value(value):
         return True
     return False
 
+# Function to count leading spaces in a string
+def count_leading_spaces(text):
+    if not isinstance(text, str):
+        return 0
+    return len(text) - len(text.lstrip(' '))
+
 # Function to check if a row is a parent (A has value, rest blank - treating "Restated" as blank, but NOT zero)
 def is_parent_row_by_blanks(sheet, row, max_col):
     cell_a = sheet[f'A{row}']
-    if not cell_a.value or not cell_a.value.strip():
+    if not cell_a.value:
         return False
+    cell_a_text = str(cell_a.value).strip()
+    if not cell_a_text:
+        return False
+    
     # Check if all other columns are blank (treating "Restated" as blank, but NOT zero)
     for col in range(2, max_col + 1):  # Start from B (column 2)
         col_letter = get_column_letter(col)
@@ -77,6 +86,22 @@ def is_column_blank(sheet, col):
             return False
     return True
 
+# Function to check if a row should be ignored (Forecast-related or duplicate headers)
+def should_ignore_row(cell_a_value, header_texts):
+    if not cell_a_value:
+        return False
+    text = str(cell_a_value).strip().lower()
+    
+    # Ignore rows starting with "forecast"
+    if text.startswith("forecast"):
+        return True
+    
+    # Ignore rows that match header texts (duplicate headers in data)
+    if text in [h.lower() for h in header_texts if h]:
+        return True
+    
+    return False
+
 # Function to process the sheet and flatten it dynamically
 def process_sheet(sheet):
     headers = [None] * sheet.max_column  # List for headers in column order (0-indexed)
@@ -92,6 +117,8 @@ def process_sheet(sheet):
     
     # Dynamic Header Construction: Scan for merged cells and build hierarchies
     processed_cols = set()  # To avoid reprocessing merged columns
+    header_texts = []  # Store header texts for duplicate detection
+    
     for row in range(1, 4):  # Check rows 1-3 for headers
         for col in range(1, sheet.max_column + 1):
             col_letter = get_column_letter(col)
@@ -102,6 +129,7 @@ def process_sheet(sheet):
             if merged_range:
                 # Parent header
                 parent = cell.value or ""
+                header_texts.append(str(parent).strip())
                 # Get child cells (next row in the merged columns)
                 child_row = row + 1
                 child_values = []
@@ -110,6 +138,7 @@ def process_sheet(sheet):
                     child_cell = sheet[f'{merged_col_letter}{child_row}']
                     if child_cell.value:
                         child_values.append(child_cell.value)
+                        header_texts.append(str(child_cell.value).strip())
                     processed_cols.add(merged_col)
                 
                 # Build headers for each column in the merge
@@ -122,6 +151,7 @@ def process_sheet(sheet):
                 # Single cell header (if not merged)
                 if cell.value and cell.value not in ['Comments']:
                     headers[col - 1] = cell.value  # 0-indexed
+                    header_texts.append(str(cell.value).strip())
     
     # Make headers unique
     headers = make_unique(headers)
@@ -144,16 +174,24 @@ def process_sheet(sheet):
         cell_a = sheet[f'A{row}']
         cell_a_value = cell_a.value
         
-        # Skip rows starting with "Forecast based on"
-        if cell_a_value and str(cell_a_value).strip().startswith("Forecast based on"):
+        # Skip forecast-related rows and duplicate headers
+        if should_ignore_row(cell_a_value, header_texts):
             continue
         
-        # Check if this is a parent row (light blue OR A populated with rest blank, treating "Restated" as blank, NOT zero)
+        if not cell_a_value:
+            continue
+            
+        # Count leading spaces to determine hierarchy
+        cell_a_text = str(cell_a_value)
+        leading_spaces = count_leading_spaces(cell_a_text)
+        stripped_text = cell_a_text.strip()
+        
+        # Check if this is a parent row (light blue OR A populated with rest blank)
         is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
         
-        if is_parent and cell_a_value and cell_a_value.strip():
-            # This is a parent row
-            current_parent = cell_a_value.strip()
+        if is_parent and leading_spaces == 0:
+            # This is a parent row (0 spaces)
+            current_parent = stripped_text
             current_child = None  # Reset child for new parent
             vertical_headings.append(current_parent)
             row_data = {}
@@ -161,23 +199,28 @@ def process_sheet(sheet):
                 if col not in blank_columns and headers[col]:  # Skip blank columns
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
+        elif leading_spaces >= 4:
+            # Grandchild (4+ spaces) - child of the immediate child
+            if current_child:
+                heading = f"{current_parent}_{current_child}_{stripped_text}"
+            else:
+                heading = f"{current_parent}_{stripped_text}"
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
         else:
-            # This is a child or grandchild row
-            if cell_a_value and cell_a_value.strip():
-                if current_child is None:
-                    # First level child
-                    current_child = cell_a_value.strip()
-                    heading = f"{current_parent}_{current_child}"
-                else:
-                    # Second level (grandchild)
-                    grandchild = cell_a_value.strip()
-                    heading = f"{current_parent}_{current_child}_{grandchild}"
-                vertical_headings.append(heading)
-                row_data = {}
-                for col in range(len(headers)):
-                    if col not in blank_columns and headers[col]:  # Skip blank columns
-                        row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-                data_rows.append(row_data)
+            # Child (1-3 spaces) - direct child of parent
+            current_child = stripped_text
+            heading = f"{current_parent}_{current_child}"
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
     
     # Create DataFrame, filtering out blank columns
     if data_rows and vertical_headings:
