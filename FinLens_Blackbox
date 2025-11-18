@@ -89,6 +89,29 @@ def should_ignore_row(cell_a_value, header_texts):
     
     return False
 
+# Function to check if header value is invalid (contains #REF!, #N/A, etc.)
+def is_invalid_header(value):
+    if not value:
+        return True
+    text = str(value).strip().lower()
+    # Check for Excel error values
+    if any(error in text for error in ['#ref!', '#n/a', '#value!', '#div/0!', '#name?', '#null!', '#num!', 'forecast']):
+        return True
+    return False
+
+# Function to make header names unique by appending suffix if duplicates
+def make_unique_headers(headers_dict):
+    seen = {}
+    unique_headers = {}
+    for col, header in headers_dict.items():
+        if header in seen:
+            seen[header] += 1
+            unique_headers[col] = f"{header}_{seen[header]}"
+        else:
+            seen[header] = 0
+            unique_headers[col] = header
+    return unique_headers
+
 # Function to format Excel output with styling
 def format_excel_output(df, company_info):
     # Create a new workbook
@@ -164,13 +187,23 @@ def process_sheet(sheet):
         for col in range(1, sheet.max_column + 1):
             col_letter = get_column_letter(col)
             cell = sheet[f'{col_letter}{row}']
+            
+            # Skip if already processed or invalid
             if col in processed_cols or cell.value in [None, 'Comments']:
                 continue
+            
+            # Skip if header contains error values
+            if is_invalid_header(cell.value):
+                processed_cols.add(col)
+                continue
+            
             merged_range = get_merged_range(sheet, cell)
             if merged_range:
                 # Parent header
                 parent = cell.value or ""
-                header_texts.append(str(parent).strip())
+                if not is_invalid_header(parent):
+                    header_texts.append(str(parent).strip())
+                
                 # Get child cells (next row in the merged columns)
                 child_row = row + 1
                 child_values = []
@@ -178,11 +211,16 @@ def process_sheet(sheet):
                     merged_col_letter = get_column_letter(merged_col)
                     child_cell = sheet[f'{merged_col_letter}{child_row}']
                     child_val = child_cell.value
-                    if child_val:
-                        child_values.append(child_val)
-                        header_texts.append(str(child_val).strip())
-                    else:
+                    
+                    # Skip invalid child values
+                    if is_invalid_header(child_val):
                         child_values.append("")
+                    else:
+                        if child_val:
+                            child_values.append(child_val)
+                            header_texts.append(str(child_val).strip())
+                        else:
+                            child_values.append("")
                     processed_cols.add(merged_col)
                 
                 # Build headers for each column in the merge
@@ -190,15 +228,20 @@ def process_sheet(sheet):
                     if i < len(child_values) and child_values[i]:
                         column_to_header[merged_col] = f"{parent}_{child_values[i]}"
                     else:
-                        column_to_header[merged_col] = parent
+                        # Skip columns with invalid headers
+                        if not is_invalid_header(parent):
+                            column_to_header[merged_col] = parent
             else:
                 # Single cell header (if not merged)
-                if cell.value and cell.value not in ['Comments']:
+                if cell.value and cell.value not in ['Comments'] and not is_invalid_header(cell.value):
                     column_to_header[col] = str(cell.value)
                     header_texts.append(str(cell.value).strip())
     
     # Set column A header
     column_to_header[1] = company_info
+    
+    # Make headers unique
+    column_to_header = make_unique_headers(column_to_header)
     
     # Identify and mark blank columns for removal
     blank_columns = set()
