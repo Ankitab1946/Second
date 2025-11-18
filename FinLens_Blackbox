@@ -162,9 +162,10 @@ def process_sheet(sheet):
         if is_column_blank(sheet, col):
             blank_columns.add(col - 1)  # Store 0-indexed
     
-    # Stack-based hierarchy tracking
-    # Stack will store (indent_level, text) tuples
-    hierarchy_stack = []
+    # Now process rows dynamically for vertical headings and data
+    current_parent = None
+    current_child = None
+    previous_spaces = 0
     
     for row in range(4, sheet.max_row + 1):
         # Skip hidden rows
@@ -190,30 +191,51 @@ def process_sheet(sheet):
         is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
         
         if is_parent and leading_spaces == 0:
-            # This is a top-level parent row - reset hierarchy
-            hierarchy_stack = [(0, stripped_text)]
-            heading = stripped_text
-        else:
-            # Pop stack until we find the appropriate parent level
-            while hierarchy_stack and hierarchy_stack[-1][0] >= leading_spaces:
-                hierarchy_stack.pop()
-            
-            # Build heading from stack
-            if hierarchy_stack:
-                parent_parts = [item[1] for item in hierarchy_stack]
-                heading = "_".join(parent_parts + [stripped_text])
+            # This is a parent row (0 spaces)
+            current_parent = stripped_text
+            current_child = None  # Reset child for new parent
+            previous_spaces = 0
+            vertical_headings.append(current_parent)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
+        elif leading_spaces == 1:
+            # Child (1 space) - direct child of parent
+            current_child = stripped_text
+            previous_spaces = 1
+            heading = f"{current_parent}_{current_child}"
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
+        elif leading_spaces > previous_spaces and previous_spaces >= 1:
+            # Grandchild (more spaces than previous level) - child of the most recent child
+            if current_child:
+                heading = f"{current_parent}_{current_child}_{stripped_text}"
             else:
-                heading = stripped_text
-            
-            # Add current item to stack
-            hierarchy_stack.append((leading_spaces, stripped_text))
-        
-        vertical_headings.append(heading)
-        row_data = {}
-        for col in range(len(headers)):
-            if col not in blank_columns and headers[col]:  # Skip blank columns
-                row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-        data_rows.append(row_data)
+                heading = f"{current_parent}_{stripped_text}"
+            previous_spaces = leading_spaces
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
+        else:
+            # Same or less indentation than previous - treat as new child
+            current_child = stripped_text
+            previous_spaces = leading_spaces
+            heading = f"{current_parent}_{current_child}"
+            vertical_headings.append(heading)
+            row_data = {}
+            for col in range(len(headers)):
+                if col not in blank_columns and headers[col]:  # Skip blank columns
+                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+            data_rows.append(row_data)
     
     # Create DataFrame, filtering out blank columns
     if data_rows and vertical_headings:
