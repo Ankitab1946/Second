@@ -45,28 +45,27 @@ def count_leading_spaces(text):
         return 0
     return len(text) - len(text.lstrip(' '))
 
-# Function to check if a row is a parent (A has value, rest blank - treating "Restated" as blank, but NOT zero)
-def is_parent_row_by_blanks(sheet, row, max_col):
-    cell_a = sheet[f'A{row}']
-    if not cell_a.value:
-        return False
-    cell_a_text = str(cell_a.value).strip()
-    if not cell_a_text:
-        return False
-    
-    # Check if all other columns are blank (treating "Restated" as blank, but NOT zero)
+# Function to check if rest of row has values (excluding "Restated")
+def has_row_values(sheet, row, max_col):
     for col in range(2, max_col + 1):  # Start from B (column 2)
         col_letter = get_column_letter(col)
         cell_value = sheet[f'{col_letter}{row}'].value
-        # Skip if truly blank
+        # Skip truly blank
         if is_blank_value(cell_value):
             continue
-        # Treat "Restated" as blank
+        # Skip "Restated"
         if isinstance(cell_value, str) and cell_value.strip().lower() == "restated":
             continue
-        # If we get here, cell has a real value (including zero) - not a parent row
-        return False
-    return True
+        # Found a real value (including zero)
+        return True
+    return False
+
+# Function to check if column D has "Restated"
+def has_restated_in_d(sheet, row):
+    cell_d = sheet[f'D{row}']
+    if cell_d.value and isinstance(cell_d.value, str):
+        return cell_d.value.strip().lower() == "restated"
+    return False
 
 # Function to check if a row is hidden
 def is_row_hidden(sheet, row):
@@ -165,7 +164,6 @@ def process_sheet(sheet):
     # Now process rows dynamically for vertical headings and data
     current_parent = None
     current_child = None
-    previous_spaces = 0
     
     for row in range(4, sheet.max_row + 1):
         # Skip hidden rows
@@ -187,24 +185,32 @@ def process_sheet(sheet):
         leading_spaces = count_leading_spaces(cell_a_text)
         stripped_text = cell_a_text.strip()
         
-        # Check if this is a parent row (light blue OR A populated with rest blank)
-        is_parent = is_light_blue(cell_a) or is_parent_row_by_blanks(sheet, row, sheet.max_column)
+        # Check if rest of row has values
+        has_values = has_row_values(sheet, row, sheet.max_column)
         
-        if is_parent and leading_spaces == 0:
-            # This is a parent row (0 spaces)
+        # Check for parent row:
+        # 1. Light blue OR
+        # 2. 0 spaces AND no values in rest of row OR
+        # 3. 0 spaces AND "Restated" in column D
+        is_parent = (
+            is_light_blue(cell_a) or 
+            (leading_spaces == 0 and not has_values) or 
+            (leading_spaces == 0 and has_restated_in_d(sheet, row))
+        )
+        
+        if is_parent:
+            # This is a parent row
             current_parent = stripped_text
             current_child = None  # Reset child for new parent
-            previous_spaces = 0
             vertical_headings.append(current_parent)
             row_data = {}
             for col in range(len(headers)):
                 if col not in blank_columns and headers[col]:  # Skip blank columns
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
-        elif leading_spaces == 1:
-            # Child (1 space) - direct child of parent
+        elif leading_spaces == 0 and has_values:
+            # Child (0 spaces with values in rest of row)
             current_child = stripped_text
-            previous_spaces = 1
             heading = f"{current_parent}_{current_child}"
             vertical_headings.append(heading)
             row_data = {}
@@ -212,13 +218,9 @@ def process_sheet(sheet):
                 if col not in blank_columns and headers[col]:  # Skip blank columns
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
-        elif leading_spaces > previous_spaces and previous_spaces >= 1:
-            # Grandchild (more spaces than previous level) - child of the most recent child
-            if current_child:
-                heading = f"{current_parent}_{current_child}_{stripped_text}"
-            else:
-                heading = f"{current_parent}_{stripped_text}"
-            previous_spaces = leading_spaces
+        elif leading_spaces >= 2 and has_values and current_child:
+            # Grandchild (2+ spaces with values in rest of row)
+            heading = f"{current_parent}_{current_child}_{stripped_text}"
             vertical_headings.append(heading)
             row_data = {}
             for col in range(len(headers)):
@@ -226,16 +228,16 @@ def process_sheet(sheet):
                     row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
             data_rows.append(row_data)
         else:
-            # Same or less indentation than previous - treat as new child
-            current_child = stripped_text
-            previous_spaces = leading_spaces
-            heading = f"{current_parent}_{current_child}"
-            vertical_headings.append(heading)
-            row_data = {}
-            for col in range(len(headers)):
-                if col not in blank_columns and headers[col]:  # Skip blank columns
-                    row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
-            data_rows.append(row_data)
+            # Default: treat as child if we have a parent
+            if current_parent:
+                current_child = stripped_text
+                heading = f"{current_parent}_{current_child}"
+                vertical_headings.append(heading)
+                row_data = {}
+                for col in range(len(headers)):
+                    if col not in blank_columns and headers[col]:  # Skip blank columns
+                        row_data[col] = sheet[f'{get_column_letter(col+1)}{row}'].value
+                data_rows.append(row_data)
     
     # Create DataFrame, filtering out blank columns
     if data_rows and vertical_headings:
