@@ -1,17 +1,18 @@
 """
 AI Testcase Generator Streamlit App
-- Fetches Jira issue by issue key (user inputs Jira base url + email + API token)
+- Fetches Jira issue by issue key (user inputs Jira base url + email + API token OR username+password)
 - Sends description/summary/labels/comments to Amazon Bedrock to generate structured test cases
 - Displays editable test cases in UI
 - Allows export to CSV
-- After review, uploads CSV as attachment to Jira and/or creates sub-tasks for each test case
+- After review, uploads CSV in Jira and/or creates sub-tasks for each test case
 
 Pre-requisites:
 - Python 3.9+
 - pip install streamlit boto3 requests pandas python-dotenv
 - Set AWS credentials (aws_access_key_id, aws_secret_access_key, aws_session_token) via environment variables OR paste in UI
 
-References: Amazon Bedrock SDK (boto3) and Jira REST API.
+Notes:
+- Jira Cloud (yourdomain.atlassian.net) requires Email + API Token. Username+password works only for Jira Server/Data Center (on-prem), if basic auth is enabled.
 """
 
 import streamlit as st
@@ -21,7 +22,6 @@ import requests
 import pandas as pd
 import os
 from typing import List, Dict, Any
-from base64 import b64encode
 
 # ---------- Helper: Bedrock client ----------
 def make_bedrock_client(aws_region: str, aws_access_key_id: str = None,
@@ -38,7 +38,6 @@ def make_bedrock_client(aws_region: str, aws_access_key_id: str = None,
 
     session = boto3.Session(**session_kwargs) if session_kwargs else boto3.Session()
     return session.client('bedrock-runtime', region_name=aws_region)
-
 
 # ---------- Generate testcases via Bedrock ----------
 PROMPT_TEMPLATE = (
@@ -59,7 +58,6 @@ def generate_testcases_bedrock(bedrock_client, model_id: str, summary: str, desc
         comments="\n".join(comments) if comments else ""
     )
 
-    # Bedrock expects a bytes or JSON body depending on API variant. We use invoke_model (text mode)
     body = json.dumps({
         'prompt': prompt,
         'max_tokens_to_sample': max_tokens
@@ -72,32 +70,26 @@ def generate_testcases_bedrock(bedrock_client, model_id: str, summary: str, desc
         body=body
     )
 
-    # Response body may be bytes; decode
-    if isinstance(resp.get('body'), (bytes, bytearray)):  # sometimes Streaming
+    # Decode response body
+    if isinstance(resp.get('body'), (bytes, bytearray)):
         text = resp['body'].decode('utf-8')
     else:
-        # boto3 may return a StreamingBody object
         try:
             text = resp['body'].read().decode('utf-8')
         except Exception:
             text = str(resp.get('body'))
 
-    # The model may return extra tokens; try to extract first JSON array
     text = text.strip()
-
-    # Attempt to find JSON array start
     start = text.find('[')
     end = text.rfind(']')
     if start != -1 and end != -1 and end > start:
         json_text = text[start:end+1]
     else:
-        # fallback: try full text
         json_text = text
 
     try:
         testcases = json.loads(json_text)
-    except Exception as e:
-        # If parsing fails, provide raw text in one test case so user can correct prompt
+    except Exception:
         testcases = [{
             'id': 'GEN-ERR-1',
             'title': 'Model output parse error',
@@ -108,7 +100,6 @@ def generate_testcases_bedrock(bedrock_client, model_id: str, summary: str, desc
             'expected_result': ''
         }]
 
-    # Normalize testcases: ensure fields exist
     normalized = []
     for i, tc in enumerate(testcases, start=1):
         normalized.append({
@@ -122,8 +113,8 @@ def generate_testcases_bedrock(bedrock_client, model_id: str, summary: str, desc
         })
     return normalized
 
-
-# ---------- Jira helpers ----------
+# ---------- Jira helpers (supports API token and password) ----------
+from requests.auth import HTTPBasicAuth
 
 def fetch_jira_issue(jira_base: str, issue_key: str, auth_method: str = 'api_token', email: str = None, api_token: str = None, username: str = None, password: str = None):
     """
@@ -132,8 +123,6 @@ def fetch_jira_issue(jira_base: str, issue_key: str, auth_method: str = 'api_tok
     - auth_method='password': use HTTPBasicAuth(username, password) (Jira Server/Data Center)
     Raises RuntimeError with Jira's response body on non-200 responses for easier debugging.
     """
-    from requests.auth import HTTPBasicAuth
-
     url = jira_base.rstrip('/') + f'/rest/api/3/issue/{issue_key}?fields=summary,description,labels,comment'
     headers = {'Accept': 'application/json'}
 
@@ -158,13 +147,18 @@ def fetch_jira_issue(jira_base: str, issue_key: str, auth_method: str = 'api_tok
     if resp.status_code == 200:
         return resp.json()
     else:
-        # Return Jira's error body for easier debugging (redact tokens when logging externally)
         body_text = resp.text
         raise RuntimeError(f'Error fetching issue: HTTP {resp.status_code} - {body_text}')
 
 
-def create_jira_subtask(jira_base: str, parent_key: str, summary: str, description: str, issue_type: str, project_key: str, email: str, api_token: str):
+def create_jira_subtask(jira_base: str, parent_key: str, summary: str, description: str, issue_type: str, project_key: str, auth_method: str, email: str = None, api_token: str = None, username: str = None, password: str = None):
     api = jira_base.rstrip('/') + '/rest/api/3/issue'
+    # choose auth
+    if auth_method == 'api_token':
+        auth = HTTPBasicAuth(email, api_token)
+    else:
+        auth = HTTPBasicAuth(username, password)
+
     payload = {
         'fields': {
             'project': {'key': project_key},
@@ -174,21 +168,22 @@ def create_jira_subtask(jira_base: str, parent_key: str, summary: str, descripti
             'issuetype': {'name': issue_type}
         }
     }
-    resp = requests.post(api, auth=(email, api_token), headers={'Content-Type': 'application/json'}, json=payload)
+    resp = requests.post(api, auth=auth, headers={'Content-Type': 'application/json'}, json=payload)
     resp.raise_for_status()
     return resp.json()
 
 
-def attach_file_to_issue(jira_base: str, issue_key: str, file_bytes: bytes, filename: str, email: str, api_token: str):
+def attach_file_to_issue(jira_base: str, issue_key: str, file_bytes: bytes, filename: str, auth_method: str, email: str = None, api_token: str = None, username: str = None, password: str = None):
     api = jira_base.rstrip('/') + f'/rest/api/3/issue/{issue_key}/attachments'
-    headers = {
-        'X-Atlassian-Token': 'no-check'
-    }
+    headers = {'X-Atlassian-Token': 'no-check'}
+    if auth_method == 'api_token':
+        auth = HTTPBasicAuth(email, api_token)
+    else:
+        auth = HTTPBasicAuth(username, password)
     files = {'file': (filename, file_bytes)}
-    resp = requests.post(api, auth=(email, api_token), headers=headers, files=files)
+    resp = requests.post(api, auth=auth, headers=headers, files=files)
     resp.raise_for_status()
     return resp.json()
-
 
 # ---------- Streamlit UI ----------
 
@@ -206,7 +201,6 @@ def tc_list_to_df(tcs: List[Dict[str, Any]]) -> pd.DataFrame:
         })
     return pd.DataFrame(rows)
 
-
 st.set_page_config(layout='wide', page_title='AI Testcase Generator')
 st.title('AI Testcase Generator (AWS Bedrock + Jira)')
 
@@ -220,8 +214,17 @@ model_id = st.sidebar.text_input('Bedrock Model ID', value='anthropic.claude-2',
 st.sidebar.write('---')
 st.sidebar.header('Jira Settings')
 jira_base = st.sidebar.text_input('Jira Base URL (e.g. https://yourdomain.atlassian.net)')
-jira_email = st.sidebar.text_input('Jira Email (for API auth)')
+
+# Auth method selection
+jira_auth_method = st.sidebar.radio('Jira Auth Method', options=['api_token', 'password'], index=0, format_func=lambda x: 'Email + API Token (Cloud)' if x=='api_token' else 'Username + Password (Server)')
+
+# API token fields
+jira_email = st.sidebar.text_input('Jira Email (for API token auth)')
 jira_api_token = st.sidebar.text_input('Jira API Token', type='password')
+
+# Password fields
+jira_username = st.sidebar.text_input('Jira Username (for password auth)')
+jira_password = st.sidebar.text_input('Jira Password', type='password')
 
 st.markdown('Enter a Jira issue key below, press Fetch to load details. Then click Generate to create test cases.')
 
@@ -235,8 +238,7 @@ with col2:
             st.error('Provide Jira base URL and issue key in the sidebar or fields.')
         else:
             try:
-                # Determine auth method and call fetch
-                auth_method = jira_auth_method  # from sidebar radio selection
+                auth_method = jira_auth_method
                 if auth_method == 'api_token':
                     if not jira_email or not jira_api_token:
                         st.error('Provide Jira Email and API Token for API token authentication.')
@@ -245,7 +247,6 @@ with col2:
                         st.session_state['issue'] = issue
                         st.success('Fetched issue ' + issue_key)
                 else:
-                    # password flow
                     if not jira_username or not jira_password:
                         st.error('Provide Jira username and password for password authentication.')
                     else:
@@ -255,7 +256,33 @@ with col2:
             except Exception as e:
                 st.error('Error fetching issue: ' + str(e))
 
-                st.error('Error fetching issue: ' + str(e))
+# Optional: test credentials button
+st.sidebar.write('---')
+if st.sidebar.button('Test Jira Credentials'):
+    try:
+        if jira_auth_method == 'api_token':
+            if not jira_email or not jira_api_token:
+                st.sidebar.error('Provide email and API token')
+            else:
+                # call a lightweight endpoint: my permissions
+                url = jira_base.rstrip('/') + '/rest/api/3/myself'
+                resp = requests.get(url, auth=HTTPBasicAuth(jira_email, jira_api_token), headers={'Accept': 'application/json'}, timeout=10)
+                if resp.status_code == 200:
+                    st.sidebar.success('API token credentials valid')
+                else:
+                    st.sidebar.error(f'Auth test failed: {resp.status_code} - {resp.text}')
+        else:
+            if not jira_username or not jira_password:
+                st.sidebar.error('Provide username and password')
+            else:
+                url = jira_base.rstrip('/') + '/rest/api/3/myself'
+                resp = requests.get(url, auth=HTTPBasicAuth(jira_username, jira_password), headers={'Accept': 'application/json'}, timeout=10)
+                if resp.status_code == 200:
+                    st.sidebar.success('Username/password valid')
+                else:
+                    st.sidebar.error(f'Auth test failed: {resp.status_code} - {resp.text}')
+    except Exception as e:
+        st.sidebar.error('Network or other error: ' + str(e))
 
 if 'issue' in st.session_state:
     issue = st.session_state['issue']
@@ -281,7 +308,6 @@ if 'issue' in st.session_state:
         max_tokens = st.number_input('Max tokens', value=1500)
     with gen_cols[2]:
         if st.button('Generate Testcases'):
-            # create bedrock client
             try:
                 bclient = make_bedrock_client(aws_region, aws_access_key_id or None, aws_secret_access_key or None, aws_session_token or None)
             except Exception as e:
@@ -317,12 +343,12 @@ if 'testcases' in st.session_state:
     col_attach, col_subtask = st.columns(2)
     with col_attach:
         if st.button('Attach CSV to Jira Issue'):
-            if not (jira_base and jira_email and jira_api_token):
-                st.error('Enter Jira credentials in sidebar')
+            if not jira_base:
+                st.error('Enter Jira base URL in sidebar')
             else:
                 csv_bytes = edited_df.to_csv(index=False).encode('utf-8')
                 try:
-                    res = attach_file_to_issue(jira_base, issue_key, csv_bytes, f'{issue_key}_testcases.csv', jira_email, jira_api_token)
+                    res = attach_file_to_issue(jira_base, issue_key, csv_bytes, f'{issue_key}_testcases.csv', jira_auth_method, email=jira_email, api_token=jira_api_token, username=jira_username, password=jira_password)
                     st.success('CSV attached to issue')
                     st.write(res)
                 except Exception as e:
@@ -332,21 +358,20 @@ if 'testcases' in st.session_state:
         project_key = st.text_input('Project Key for Sub-tasks (e.g. PROJ)')
         issue_type = st.selectbox('Sub-task Issue Type Name', options=['Sub-task', 'Task', 'Bug'])
         if st.button('Create Sub-tasks for Each Testcase'):
-            if not (jira_base and jira_email and jira_api_token and project_key):
-                st.error('Provide Jira credentials and project key')
+            if not (jira_base and project_key):
+                st.error('Provide Jira base URL and project key')
             else:
                 created = []
                 for _, row in edited_df.iterrows():
                     summ = f"TC - {row['id']} - {row['title'][:80]}"
                     desc = f"Preconditions:\n{row['preconditions']}\n\nSteps:\n{row['steps']}\n\nExpected:\n{row['expected_result']}"
                     try:
-                        res = create_jira_subtask(jira_base, issue_key, summ, desc, issue_type, project_key, jira_email, jira_api_token)
+                        res = create_jira_subtask(jira_base, issue_key, summ, desc, issue_type, project_key, jira_auth_method, email=jira_email, api_token=jira_api_token, username=jira_username, password=jira_password)
                         created.append(res.get('key'))
                     except Exception as e:
                         st.error('Failed creating subtask: ' + str(e))
                 if created:
                     st.success('Created sub-tasks: ' + ', '.join(created))
-
 
 st.markdown('\n---\n**Notes & Tips:**')
 st.markdown('- Tune the prompt template in the source to change how the model formats testcases.\n- Validate generated testcases carefully: LLMs may hallucinate details or miss edge cases.\n- For production, use prompt management, logging, and human-in-the-loop review.')
