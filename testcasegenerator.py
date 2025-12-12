@@ -1,4 +1,4 @@
-# ai_testcase_generator_full.py
+# ai_testcase_generator_with_model_list.py
 import streamlit as st
 import boto3
 from botocore.config import Config
@@ -10,19 +10,21 @@ import pandas as pd
 import os
 import tempfile
 import urllib3
+import difflib
+import traceback
 from typing import List, Dict, Any
 
-# --- Page config ---
-st.set_page_config(layout='wide', page_title='AI Testcase Generator (Bedrock + Jira)')
-st.title('AI Testcase Generator (AWS Bedrock + Jira)')
+# ---------- Page config ----------
+st.set_page_config(layout='wide', page_title='AI Testcase Generator (Bedrock Model Picker)')
+st.title('AI Testcase Generator — Bedrock Model Picker')
 
-# ---------- Helper: TLS / verify helpers ----------
+st.markdown("""
+This app discovers Bedrock models visible to your account/region, lets you pick one,
+validates the selection, then invokes the model to generate test cases from a Jira issue.
+""")
+
+# ---------- TLS helpers ----------
 def build_verify_from_sidebar(prefix: str):
-    """
-    Create a verify value (True | False | path-to-pem) based on sidebar controls.
-    prefix is 'bedrock' or 'jira' to differentiate labels.
-    Returns (verify_value, display_message)
-    """
     st.sidebar.write('---')
     st.sidebar.markdown(f'**{prefix.capitalize()} TLS options**')
     disable = st.sidebar.checkbox(f'Disable {prefix} SSL verification (insecure)', value=False, key=f'{prefix}_disable')
@@ -41,16 +43,13 @@ def build_verify_from_sidebar(prefix: str):
     elif ca_path:
         return ca_path, f'{prefix}: using uploaded CA bundle {ca_path}'
     else:
-        # use system default; allow AWS_CA_BUNDLE env var for bedrock
         if prefix == 'bedrock' and os.getenv('AWS_CA_BUNDLE'):
             return os.getenv('AWS_CA_BUNDLE'), f'{prefix}: using AWS_CA_BUNDLE={os.getenv("AWS_CA_BUNDLE")}'
         return True, f'{prefix}: using system trust store'
 
-# We'll show bedrock/jira TLS options side-by-side in the sidebar for clarity
 st.sidebar.header('Connection & TLS settings')
 bedrock_verify, bedrock_verify_msg = build_verify_from_sidebar('bedrock')
 jira_verify, jira_verify_msg = build_verify_from_sidebar('jira')
-
 st.sidebar.markdown(f"*Bedrock TLS:* {bedrock_verify_msg}")
 st.sidebar.markdown(f"*Jira TLS:* {jira_verify_msg}")
 
@@ -61,7 +60,6 @@ aws_region = st.sidebar.text_input('AWS Region', value='us-east-1')
 aws_access_key_id = st.sidebar.text_input('AWS Access Key ID', value=os.getenv('AWS_ACCESS_KEY_ID') or '')
 aws_secret_access_key = st.sidebar.text_input('AWS Secret Access Key', value=os.getenv('AWS_SECRET_ACCESS_KEY') or '', type='password')
 aws_session_token = st.sidebar.text_input('AWS Session Token (optional)', value=os.getenv('AWS_SESSION_TOKEN') or '', type='password')
-bedrock_model_id = st.sidebar.text_input('Bedrock Model ID', value='anthropic.claude-2')
 
 # ---------- Jira inputs ----------
 st.sidebar.write('---')
@@ -74,33 +72,26 @@ jira_api_token = st.sidebar.text_input('Jira API Token', type='password')
 jira_username = st.sidebar.text_input('Jira Username (for password auth)')
 jira_password = st.sidebar.text_input('Jira Password', type='password')
 
-# ---------- Utility: STS test for AWS creds ----------
+# ---------- Utility: STS test ----------
 def test_aws_credentials(region, access_key, secret_key, session_token, verify=True):
-    """
-    Return (ok:bool, message:str, details:dict|None)
-    """
-    session_kwargs = {}
+    kwargs = {}
     if access_key and secret_key:
-        session_kwargs['aws_access_key_id'] = access_key
-        session_kwargs['aws_secret_access_key'] = secret_key
+        kwargs['aws_access_key_id'] = access_key
+        kwargs['aws_secret_access_key'] = secret_key
     if session_token:
-        session_kwargs['aws_session_token'] = session_token
-
+        kwargs['aws_session_token'] = session_token
     try:
-        session = boto3.Session(**session_kwargs) if session_kwargs else boto3.Session()
-        # STS client - use provided region (some endpoints require region)
+        session = boto3.Session(**kwargs) if kwargs else boto3.Session()
         sts = session.client('sts', region_name=region, verify=verify)
         resp = sts.get_caller_identity()
-        return True, 'STS success (caller identity returned)', resp
+        return True, 'STS OK', resp
     except botocore.exceptions.ClientError as e:
         err = e.response.get('Error', {})
         return False, f"AWS ClientError: {err.get('Code')}: {err.get('Message')}", None
-    except botocore.exceptions.NoRegionError as e:
-        return False, f'NoRegionError: {e}', None
     except botocore.exceptions.SSLError as e:
-        return False, f'SSLError: {e}', None
+        return False, f"SSLError: {e}", None
     except Exception as e:
-        return False, f'Unexpected error: {e}', None
+        return False, f"Unexpected error: {e}", None
 
 if st.sidebar.button('Test AWS Credentials / STS'):
     ok, msg, details = test_aws_credentials(aws_region, aws_access_key_id, aws_secret_access_key, aws_session_token, verify=bedrock_verify)
@@ -110,15 +101,12 @@ if st.sidebar.button('Test AWS Credentials / STS'):
     else:
         st.sidebar.error(msg)
 
-# ---------- Bedrock client creation (honoring verify) ----------
+# ---------- Bedrock client ----------
 def make_bedrock_client(aws_region: str,
                         aws_access_key_id: str = None,
                         aws_secret_access_key: str = None,
                         aws_session_token: str = None,
                         verify=True):
-    """
-    Create a Bedrock runtime client; verify can be True/False/path-to-pem.
-    """
     session_kwargs = {}
     if aws_access_key_id and aws_secret_access_key:
         session_kwargs.update({
@@ -127,21 +115,62 @@ def make_bedrock_client(aws_region: str,
         })
     if aws_session_token:
         session_kwargs['aws_session_token'] = aws_session_token
-
     session = boto3.Session(**session_kwargs) if session_kwargs else boto3.Session()
     cfg = Config(retries={'max_attempts': 3, 'mode': 'standard'})
-
     try:
         client = session.client('bedrock-runtime', region_name=aws_region, config=cfg, verify=verify)
         return client
-    except botocore.exceptions.SSLError as e:
-        raise RuntimeError(f'Bedrock SSL error when creating client: {e}')
     except botocore.exceptions.ClientError as e:
-        # include AWS error code/message
         err = e.response.get('Error', {})
         raise RuntimeError(f'Bedrock ClientError: {err.get("Code")}: {err.get("Message")}')
+    except botocore.exceptions.SSLError as e:
+        raise RuntimeError(f'Bedrock SSL error: {e}')
     except Exception as e:
         raise RuntimeError(f'Error creating Bedrock client: {e}')
+
+# ---------- Model listing & validation ----------
+def list_bedrock_models_safe(bclient):
+    try:
+        resp = bclient.list_models()
+        models = []
+        if isinstance(resp, dict):
+            for m in resp.get('models', []) or []:
+                mid = None
+                if isinstance(m, dict):
+                    mid = m.get('modelId') or m.get('id') or m.get('model_id') or m.get('name')
+                else:
+                    mid = str(m)
+                if mid:
+                    models.append(str(mid))
+        else:
+            models = [str(resp)]
+        return True, sorted(set(models)), ''
+    except botocore.exceptions.ClientError as e:
+        err = e.response.get('Error', {})
+        tb = traceback.format_exc()
+        return False, [], f'ClientError: {err.get("Code")}: {err.get("Message")}\\n{tb}'
+    except Exception as e:
+        tb = traceback.format_exc()
+        return False, [], f'Error calling list_models(): {e}\\n{tb}'
+
+def validate_model_id(bclient, model_id: str):
+    ok, models, msg = list_bedrock_models_safe(bclient)
+    if not ok:
+        return False, f'Could not list models: {msg}', []
+    if model_id in models:
+        return True, f'Model \"{model_id}\" is available', []
+    # case-insensitive
+    lower_to_orig = {m.lower(): m for m in models}
+    if model_id.lower() in lower_to_orig:
+        corr = lower_to_orig[model_id.lower()]
+        return True, f'Model id matched case-insensitively. Use \"{corr}\" instead.', [corr]
+    suggestions = difflib.get_close_matches(model_id, models, n=8, cutoff=0.35)
+    if suggestions:
+        return False, f'Model \"{model_id}\" not found. Suggestions: {suggestions}', suggestions
+    sample = models[:20]
+    more = len(models) - len(sample)
+    more_msg = f' (+{more} more)' if more > 0 else ''
+    return False, f'Model \"{model_id}\" not found. Found {len(models)} models; sample: {sample}{more_msg}', []
 
 # ---------- Bedrock invocation wrapper ----------
 PROMPT_TEMPLATE = (
@@ -162,7 +191,7 @@ def generate_testcases_bedrock(bclient, model_id: str, summary: str, description
 
     try:
         resp = bclient.invoke_model(
-            modelId=model_id,
+            modelId=model_id.strip(),
             contentType='application/json',
             accept='application/json',
             body=body
@@ -175,7 +204,6 @@ def generate_testcases_bedrock(bclient, model_id: str, summary: str, description
     except Exception as e:
         raise RuntimeError(f'Unexpected error calling Bedrock: {e}')
 
-    # decode response body (boto3 may return StreamingBody)
     if isinstance(resp.get('body'), (bytes, bytearray)):
         text = resp['body'].decode('utf-8')
     else:
@@ -184,7 +212,6 @@ def generate_testcases_bedrock(bclient, model_id: str, summary: str, description
         except Exception:
             text = str(resp.get('body'))
 
-    # extract first JSON array in output
     text = text.strip()
     start = text.find('[')
     end = text.rfind(']')
@@ -193,7 +220,6 @@ def generate_testcases_bedrock(bclient, model_id: str, summary: str, description
     try:
         testcases = json.loads(json_text)
     except Exception:
-        # fallback: return single item containing raw output for inspection
         testcases = [{
             'id': 'GEN-ERR-1',
             'title': 'Model output parse error',
@@ -217,31 +243,26 @@ def generate_testcases_bedrock(bclient, model_id: str, summary: str, description
         })
     return normalized
 
-# ---------- Jira helpers (supporting verify param) ----------
+# ---------- Jira helpers ----------
 def fetch_jira_issue(jira_base: str, issue_key: str, auth_method: str = 'api_token',
                      email: str = None, api_token: str = None, username: str = None, password: str = None,
                      verify=True):
     url = jira_base.rstrip('/') + f'/rest/api/3/issue/{issue_key}?fields=summary,description,labels,comment'
     headers = {'Accept': 'application/json'}
-    auth = None
     if auth_method == 'api_token':
         if not (email and api_token):
-            raise RuntimeError('Missing email or API token for API token authentication.')
+            raise RuntimeError('Missing email or API token.')
         auth = HTTPBasicAuth(email, api_token)
-    elif auth_method == 'password':
-        if not (username and password):
-            raise RuntimeError('Missing username or password for password authentication.')
-        auth = HTTPBasicAuth(username, password)
     else:
-        raise RuntimeError(f'Unknown auth method: {auth_method}')
-
+        if not (username and password):
+            raise RuntimeError('Missing username or password.')
+        auth = HTTPBasicAuth(username, password)
     try:
         resp = requests.get(url, auth=auth, headers=headers, timeout=20, verify=verify)
     except requests.exceptions.SSLError as e:
-        raise RuntimeError(f'SSL verification failed when contacting Jira: {e}')
+        raise RuntimeError(f'Jira SSL error: {e}')
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f'Network error when connecting to Jira: {e}')
-
+        raise RuntimeError(f'Network error contacting Jira: {e}')
     if resp.status_code == 200:
         return resp.json()
     else:
@@ -259,7 +280,7 @@ def attach_file_to_issue(jira_base: str, issue_key: str, file_bytes: bytes, file
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.SSLError as e:
-        raise RuntimeError(f'SSL verification failed during attachment upload: {e}')
+        raise RuntimeError(f'Attachment SSL error: {e}')
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f'Attachment failed: {e}')
 
@@ -283,21 +304,21 @@ def create_jira_subtask(jira_base: str, parent_key: str, summary: str, descripti
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.SSLError as e:
-        raise RuntimeError(f'SSL verification failed during subtask creation: {e}')
+        raise RuntimeError(f'Subtask SSL error: {e}')
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f'Subtask creation failed: {e}')
 
-# ---------- UI: Main flow ----------
-st.markdown('Enter a Jira issue key, fetch the issue, generate testcases (Bedrock), review and upload.')
+# ---------- UI flow ----------
+st.markdown('Enter Jira issue key → Fetch issue → Pick Bedrock model → Generate testcases → Review → Upload.')
 
-# Left: issue input / fetch
-col1, col2 = st.columns([2, 1])
-with col1:
+# Fetch issue
+left, right = st.columns([2,1])
+with left:
     issue_key = st.text_input('Jira Issue Key (e.g. PROJ-123)')
-with col2:
+with right:
     if st.button('Fetch Jira Issue'):
         if not issue_key or not jira_base:
-            st.error('Provide Jira base URL and issue key in the sidebar or fields.')
+            st.error('Provide Jira base URL and issue key.')
         else:
             try:
                 issue = fetch_jira_issue(jira_base, issue_key, auth_method=jira_auth_method,
@@ -309,57 +330,98 @@ with col2:
             except Exception as e:
                 st.error('Error fetching issue: ' + str(e))
 
-# If issue fetched, preview
+# If issue in session, preview and allow model listing / selection
 if 'issue' in st.session_state:
     issue = st.session_state['issue']
     fields = issue.get('fields', {})
     st.subheader('Jira Issue Preview')
     st.markdown(f"**{issue_key} - {fields.get('summary')}**")
-    st.markdown('**Description:**')
+    st.markdown('**Description**')
     st.write(fields.get('description') or '')
-    st.markdown('**Labels:** ' + ', '.join(fields.get('labels') or []))
+    st.markdown('**Labels**: ' + ', '.join(fields.get('labels') or []))
     comments = [c.get('body') for c in (fields.get('comment') or {}).get('comments', [])]
     if comments:
-        st.markdown('**Recent comments:**')
+        st.markdown('**Recent comments**:')
         for c in comments[:5]:
-            st.write('- ' + (c[:120] + '...' if len(c) > 120 else c))
+            st.write('- ' + (c[:200] + '...' if len(c) > 200 else c))
 
     st.write('---')
-    st.subheader('Generate Testcases')
+    st.subheader('Bedrock Model Selection')
 
-    gen_cols = st.columns(3)
-    with gen_cols[0]:
-        override_model = st.text_input('Model ID (override)', value=bedrock_model_id)
-    with gen_cols[1]:
-        max_tokens = st.number_input('Max tokens', value=1500)
-    with gen_cols[2]:
-        if st.button('Generate Testcases'):
-            # create bedrock client (honoring verify and aws_session_token)
-            try:
-                bclient = make_bedrock_client(aws_region,
-                                              aws_access_key_id or None,
-                                              aws_secret_access_key or None,
-                                              aws_session_token or None,
-                                              verify=bedrock_verify)
-            except Exception as e:
-                st.error('Error creating Bedrock client: ' + str(e))
-                bclient = None
+    # Create bedrock client and list models (show errors if occur)
+    try:
+        bclient = make_bedrock_client(aws_region,
+                                      aws_access_key_id or None,
+                                      aws_secret_access_key or None,
+                                      aws_session_token or None,
+                                      verify=bedrock_verify)
+    except Exception as e:
+        st.error('Error creating Bedrock client: ' + str(e))
+        bclient = None
 
-            if bclient:
-                summary = fields.get('summary') or ''
-                description = fields.get('description') or ''
-                labels = fields.get('labels') or []
-                comments = [c.get('body') for c in (fields.get('comment') or {}).get('comments', [])]
-                with st.spinner('Generating...'):
-                    try:
-                        tcs = generate_testcases_bedrock(bclient, override_model or bedrock_model_id, summary, description, labels, comments, max_tokens=max_tokens)
-                        st.session_state['testcases'] = tcs
-                        st.success(f'Generated {len(tcs)} testcases')
-                    except Exception as e:
-                        # Most likely causes: invalid AWS token, wrong region, permissions, or SSL issues
-                        st.error('Generation error: ' + str(e))
+    available_models = []
+    if bclient:
+        ok, models, msg = list_bedrock_models_safe(bclient)
+        if not ok:
+            st.error('Could not list Bedrock models: ' + str(msg))
+        else:
+            available_models = models
+            st.success(f'Found {len(models)} models (showing up to 200).')
+            # small dropdown (show top 50 for ergonomics)
+            sample = models[:200]
+            selected_model = st.selectbox('Pick a model (or paste a model id below)', options=['-- choose --'] + sample, index=0)
+            custom_model = st.text_input('Or enter custom model id (paste exact id if not in dropdown)')
+            chosen_model = (custom_model.strip() if custom_model.strip() else (selected_model if selected_model != '-- choose --' else ''))
+            st.markdown(f'**Chosen model:** `{chosen_model}`')
 
-# Show testcases for review
+            # Validate model id on demand
+            if st.button('Validate chosen model'):
+                if not chosen_model:
+                    st.error('Please choose or enter a model id.')
+                else:
+                    valid, msg, suggestions = validate_model_id(bclient, chosen_model)
+                    if valid:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                        if suggestions:
+                            st.info('Suggestions: ' + ', '.join(suggestions))
+
+            # Generate testcases button
+            st.write('---')
+            st.subheader('Generate Testcases')
+            gen_cols = st.columns(3)
+            with gen_cols[0]:
+                max_tokens = st.number_input('Max tokens', value=1500)
+            with gen_cols[1]:
+                model_to_use = st.text_input('Model id to use for invocation', value=chosen_model)
+            with gen_cols[2]:
+                if st.button('Generate Testcases (invoke)'):
+                    if not model_to_use or not model_to_use.strip():
+                        st.error('Provide a model id (select or paste).')
+                    else:
+                        # validate before invoking
+                        if bclient:
+                            valid, msg, suggestions = validate_model_id(bclient, model_to_use.strip())
+                            if not valid:
+                                st.error('Model validation failed: ' + msg)
+                                if suggestions:
+                                    st.info('Suggestions: ' + ', '.join(suggestions))
+                            else:
+                                st.info('Model validated: ' + msg)
+                                # proceed to invoke
+                                summary = fields.get('summary') or ''
+                                description = fields.get('description') or ''
+                                labels = fields.get('labels') or []
+                                comments = [c.get('body') for c in (fields.get('comment') or {}).get('comments', [])]
+                                try:
+                                    tcs = generate_testcases_bedrock(bclient, model_to_use.strip(), summary, description, labels, comments, max_tokens=max_tokens)
+                                    st.session_state['testcases'] = tcs
+                                    st.success(f'Generated {len(tcs)} testcases')
+                                except Exception as e:
+                                    st.error('Generation error: ' + str(e))
+
+# show testcases and upload flow
 def tc_list_to_df(tcs: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for tc in tcs:
@@ -382,8 +444,6 @@ if 'testcases' in st.session_state:
 
     st.write('---')
     st.subheader('Upload to Jira')
-    st.write('You can attach the CSV to the issue or create subtasks (one per testcase).')
-
     col_attach, col_subtask = st.columns(2)
     with col_attach:
         if st.button('Attach CSV to Jira Issue'):
@@ -397,7 +457,6 @@ if 'testcases' in st.session_state:
                     st.write(res)
                 except Exception as e:
                     st.error('Attachment failed: ' + str(e))
-
     with col_subtask:
         project_key = st.text_input('Project Key for Sub-tasks (e.g. PROJ)')
         issue_type = st.selectbox('Sub-task Issue Type Name', options=['Sub-task', 'Task', 'Bug'])
@@ -417,7 +476,8 @@ if 'testcases' in st.session_state:
                 if created:
                     st.success('Created sub-tasks: ' + ', '.join(created))
 
-st.markdown('\n---\n**Notes & Troubleshooting:**')
-st.markdown('- If you see **\"The security token included in the request is invalid\"**, your `aws_session_token` is probably missing/expired or the access key/secret are incorrect. Use **Test AWS Credentials / STS** (sidebar) to diagnose. ')
-st.markdown('- If you see SSL errors, try uploading your CA bundle in the sidebar or temporarily disable verification (insecure).')
-st.markdown('- Ensure Bedrock is available in the specified AWS region and your IAM principal has permissions like `bedrock:InvokeModel`.')
+st.markdown('---')
+st.markdown('**Notes & Troubleshooting**')
+st.markdown('- If `validate_model_id` fails, ensure the Bedrock region is correct and your IAM principal has `bedrock:ListModels` permission.')
+st.markdown('- If Bedrock `invoke_model` returns `ValidationException: provided model identifier is invalid`, use the model id exactly as listed by `list_models()`.')
+st.markdown('- Use the STS test (sidebar) to check invalid/expired AWS credentials.')
