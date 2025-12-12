@@ -350,4 +350,3 @@ if 'testcases' in st.session_state:
 
 st.markdown('\n---\n**Notes & Tips:**')
 st.markdown('- Tune the prompt template in the source to change how the model formats testcases.\n- Validate generated testcases carefully: LLMs may hallucinate details or miss edge cases.\n- For production, use prompt management, logging, and human-in-the-loop review.')
-
