@@ -125,11 +125,42 @@ def generate_testcases_bedrock(bedrock_client, model_id: str, summary: str, desc
 
 # ---------- Jira helpers ----------
 
-def fetch_jira_issue(jira_base: str, issue_key: str, email: str, api_token: str):
-    api = jira_base.rstrip('/') + f'/rest/api/3/issue/{issue_key}?fields=summary,description,labels,comment'
-    resp = requests.get(api, auth=(email, api_token), headers={'Accept': 'application/json'})
-    resp.raise_for_status()
-    return resp.json()
+def fetch_jira_issue(jira_base: str, issue_key: str, auth_method: str = 'api_token', email: str = None, api_token: str = None, username: str = None, password: str = None):
+    """
+    Fetch a Jira issue supporting two auth methods:
+    - auth_method='api_token': use HTTPBasicAuth(email, api_token) (Jira Cloud)
+    - auth_method='password': use HTTPBasicAuth(username, password) (Jira Server/Data Center)
+    Raises RuntimeError with Jira's response body on non-200 responses for easier debugging.
+    """
+    from requests.auth import HTTPBasicAuth
+
+    url = jira_base.rstrip('/') + f'/rest/api/3/issue/{issue_key}?fields=summary,description,labels,comment'
+    headers = {'Accept': 'application/json'}
+
+    # Choose credentials based on selected method
+    auth = None
+    if auth_method == 'api_token':
+        if not (email and api_token):
+            raise RuntimeError('Missing email or API token for API token authentication.')
+        auth = HTTPBasicAuth(email, api_token)
+    elif auth_method == 'password':
+        if not (username and password):
+            raise RuntimeError('Missing username or password for password authentication.')
+        auth = HTTPBasicAuth(username, password)
+    else:
+        raise RuntimeError(f'Unknown auth method: {auth_method}')
+
+    try:
+        resp = requests.get(url, auth=auth, headers=headers, timeout=15)
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f'Network error when connecting to Jira: {e}')
+
+    if resp.status_code == 200:
+        return resp.json()
+    else:
+        # Return Jira's error body for easier debugging (redact tokens when logging externally)
+        body_text = resp.text
+        raise RuntimeError(f'Error fetching issue: HTTP {resp.status_code} - {body_text}')
 
 
 def create_jira_subtask(jira_base: str, parent_key: str, summary: str, description: str, issue_type: str, project_key: str, email: str, api_token: str):
@@ -199,14 +230,31 @@ with col1:
     issue_key = st.text_input('Jira Issue Key (e.g. PROJ-123)')
 with col2:
     if st.button('Fetch Jira Issue'):
-        if not (jira_base and jira_email and jira_api_token and issue_key):
-            st.error('Provide Jira base URL, email, API token and issue key in the sidebar or fields.')
+        # Validate inputs based on selected auth method
+        if not issue_key or not jira_base:
+            st.error('Provide Jira base URL and issue key in the sidebar or fields.')
         else:
             try:
-                issue = fetch_jira_issue(jira_base, issue_key, jira_email, jira_api_token)
-                st.session_state['issue'] = issue
-                st.success('Fetched issue ' + issue_key)
+                # Determine auth method and call fetch
+                auth_method = jira_auth_method  # from sidebar radio selection
+                if auth_method == 'api_token':
+                    if not jira_email or not jira_api_token:
+                        st.error('Provide Jira Email and API Token for API token authentication.')
+                    else:
+                        issue = fetch_jira_issue(jira_base, issue_key, auth_method='api_token', email=jira_email, api_token=jira_api_token)
+                        st.session_state['issue'] = issue
+                        st.success('Fetched issue ' + issue_key)
+                else:
+                    # password flow
+                    if not jira_username or not jira_password:
+                        st.error('Provide Jira username and password for password authentication.')
+                    else:
+                        issue = fetch_jira_issue(jira_base, issue_key, auth_method='password', username=jira_username, password=jira_password)
+                        st.session_state['issue'] = issue
+                        st.success('Fetched issue ' + issue_key)
             except Exception as e:
+                st.error('Error fetching issue: ' + str(e))
+
                 st.error('Error fetching issue: ' + str(e))
 
 if 'issue' in st.session_state:
