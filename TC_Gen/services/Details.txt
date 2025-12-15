@@ -1,0 +1,83 @@
+bedrock_service.py
+
+Initialize Bedrock client
+
+Call Claude 3.7 Sonnet EU model
+
+Handles errors & retries
+
+Ensures JSON response compliance
+
+✔ jira_service.py
+
+REST authentication for:
+
+Jira Cloud (email + API token)
+
+Jira Data Center (username + password)
+
+Searching issues (JQL / project / summary)
+
+Creating any generic Jira issue
+
+✔ xray_service.py
+
+Detects Xray Steps field automatically
+
+Creates:
+
+Xray Test
+
+Xray Test Set
+
+Adds test steps in Xray format
+
+Links tests ↔ test sets ↔ story
+
+Validates issue types exist
+
+utils.py
+
+Excel export & JSON download
+
+Cleaning text
+
+Merging predefined templates
+
+Keyword matching
+
+Logging helpers
+
+testcase_prompt.txt
+
+Reusable prompt for test case generation
+
+Includes:
+
+Jira summary, description
+
+Keyword list
+
+Predefined test templates
+
+Required JSON structure for output
+
+app.py
+
+Streamlit UI with sections:
+
+Jira connection
+
+Story selection (manual OR search)
+
+Predefined test case upload
+
+Keyword entry
+
+Generate using Claude
+
+Display test cases
+
+Jira push (Xray Test creation + Test Set selection/creation)
+
+Download results
