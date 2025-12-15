@@ -1,1 +1,12 @@
-txt
+ai-testcase-generator/
+│
+├── app.py                          # Main Streamlit UI
+│
+├── services/
+│   ├── bedrock_service.py          # AWS Bedrock Claude API wrapper
+│   ├── jira_service.py             # Jira & Xray API interactions
+│   ├── xray_service.py             # Xray-specific logic (Test, Test Set, Steps)
+│   └── utils.py                    # Shared utilities (JSON validation, Excel export, etc.)
+│
+└── prompts/
+    └── testcase_prompt.txt         # Claude optimized prompt for test case generation
