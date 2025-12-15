@@ -41,4 +41,78 @@ A complete enterprise AI-driven Test Case Generator using:
 ---
 
 ## 🏗 Project Structure
+│
+├── app.py
+│
+├── services/
+│ ├── bedrock_service.py
+│ ├── jira_service.py
+│ ├── xray_service.py
+│ ├── utils.py
+│
+└── prompts/
+└── testcase_prompt.txt
+
+
+---
+
+## 🔧 Installation
+
+### 1️⃣ Clone Repository
+
+```bash
+git clone <repo-url>
+cd ai-testcase-generator
+
+#**##2️⃣ Install Dependencies**
+pip install -r requirements.txt
+
+**###🔐 AWS Setup**
+Set your AWS credentials as environment variables:
+export AWS_ACCESS_KEY_ID=your_key
+export AWS_SECRET_ACCESS_KEY=your_secret
+export AWS_REGION=eu-west-3
+
+
+**###Bedrock model used:**
+
+eu.anthropic.claude-3-7-sonnet-20250219-v1:0
+
+###🔐 Jira Setup
+
+Jira Cloud
+
+Username = Email
+Password = API Token
+Base URL = https://company.atlassian.net
+
+Jira Data Center
+
+Username = Username
+Password = REAL password
+Base URL = https://jira.company.com
+
+###▶️ Run the App
+streamlit run app.py
+App starts at:
+http://localhost:8501
+
+
+###🐳 Running via Docker
+**Build**
+docker build -t ai-testcase-generator .
+
+**Run**
+docker run -p 8501:8501 \
+  -e AWS_ACCESS_KEY_ID=your_key \
+  -e AWS_SECRET_ACCESS_KEY=your_secret \
+  -e AWS_REGION=eu-west-3 \
+  ai-testcase-generator
+
+
+**Predefined Template Format**
+
+Upload CSV/Excel with columns:
+
+FeatureKeyword	TestCaseTitle	Preconditions	Steps	ExpectedResult	Priority	Type
 
