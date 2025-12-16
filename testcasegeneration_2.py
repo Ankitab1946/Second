@@ -1,3 +1,9 @@
+aws bedrock create-inference-profile \
+  --inference-profile-name claude35-sonnet-profile \
+  --model-arn arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0 \
+  --region us-east-1 \
+  --no-verify-ssl
+
 # # ai_testcase_generator_fixed_for_claude35.py
 # import streamlit as st
 # import boto3
