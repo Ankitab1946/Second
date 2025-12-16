@@ -644,6 +644,32 @@ aws_secret_access_key = st.sidebar.text_input("Secret Access Key", value=os.gete
 aws_session_token = st.sidebar.text_input("Session Token (optional)", value=os.getenv("AWS_SESSION_TOKEN") or "", type="password")
 
 # =====================================================================
+# JIRA CREDENTIALS
+# =====================================================================
+st.sidebar.write("---")
+st.sidebar.header("Jira Credentials")
+
+jira_base = st.sidebar.text_input(
+    "Jira Base URL (e.g. https://yourcompany.atlassian.net)",
+    placeholder="https://yourcompany.atlassian.net"
+)
+
+jira_auth_method = st.sidebar.radio(
+    "Jira Authentication Method",
+    options=["api_token", "password"],
+    format_func=lambda x: "Email + API Token (Cloud)" if x == "api_token" else "Username + Password (Server)"
+)
+
+# For Jira Cloud (API token)
+jira_email = st.sidebar.text_input("Jira Email (Cloud users only)")
+jira_api_token = st.sidebar.text_input("Jira API Token", type="password")
+
+# For Jira Server (username/password)
+jira_username = st.sidebar.text_input("Jira Username (Server only)")
+jira_password = st.sidebar.text_input("Jira Password", type="password")
+
+
+# =====================================================================
 # CREATE BEDROCK CLIENTS (mgmt + runtime)
 # =====================================================================
 def make_clients():
