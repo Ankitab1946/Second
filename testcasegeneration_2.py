@@ -149,7 +149,8 @@ def make_clients():
 # =====================================================================
 def list_bedrock_models(mgmt):
     try:
-        resp = mgmt.list_models()
+        # resp = mgmt.list_models()
+        resp = mgmt.list_foundation_models()
         models = [m["modelId"] for m in resp.get("modelSummaries", [])]
         return True, sorted(models), ""
     except Exception as e:
