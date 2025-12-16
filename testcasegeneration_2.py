@@ -570,7 +570,7 @@
 # - STS test helps diagnose **invalid or expired AWS credentials**.
 # """)
 
-# ai_testcase_generator_claude35_profiles.py
+# ai_testcase_generator_claude35_profiles_full.py
 import streamlit as st
 import boto3
 from botocore.config import Config
@@ -582,22 +582,22 @@ import pandas as pd
 import os
 import tempfile
 import urllib3
-import difflib
-import traceback
 from typing import List, Dict, Any
+
 
 # =====================================================================
 # PAGE CONFIG
 # =====================================================================
 st.set_page_config(layout="wide", page_title="AI Testcase Generator (Claude 3.5 + Profiles)")
-st.title("AI Testcase Generator — Claude 3.5 Sonnet (with Inference Profiles)")
+st.title("AI Testcase Generator — Claude 3.5 Sonnet (Inference Profiles Enabled)")
+
 
 # =====================================================================
-# TLS CONFIG
+# TLS CONFIG BLOCK
 # =====================================================================
 def build_verify_from_sidebar(prefix: str):
     st.sidebar.write("---")
-    st.sidebar.markdown(f"**{prefix.capitalize()} TLS Options**")
+    st.sidebar.markdown(f"**{prefix.upper()} TLS Options**")
 
     disable = st.sidebar.checkbox(
         f"Disable {prefix} SSL verification (insecure)",
@@ -606,7 +606,7 @@ def build_verify_from_sidebar(prefix: str):
     )
 
     upload = st.sidebar.file_uploader(
-        f"Upload {prefix} CA certificate (.pem) (optional)",
+        f"Upload {prefix} CA (.pem)",
         type=["pem", "crt"],
         key=f"{prefix}_ca"
     )
@@ -620,19 +620,19 @@ def build_verify_from_sidebar(prefix: str):
 
     if disable:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return False, f"{prefix}: SSL Verification Disabled"
+        return False, "(SSL Verification Disabled)"
 
     if ca_path:
-        return ca_path, f"{prefix}: Using Uploaded CA Bundle"
+        return ca_path, f"(Custom CA: {ca_path})"
 
-    return True, f"{prefix}: Using System Trust Store"
+    return True, "(System Trust Store)"
 
 
 st.sidebar.header("TLS Settings")
-bedrock_verify, bedrock_msg = build_verify_from_sidebar("bedrock")
-jira_verify, jira_msg = build_verify_from_sidebar("jira")
-st.sidebar.write(bedrock_msg)
-st.sidebar.write(jira_msg)
+bedrock_verify, msg_bedrock = build_verify_from_sidebar("bedrock")
+jira_verify, msg_jira = build_verify_from_sidebar("jira")
+st.sidebar.write("Bedrock TLS:", msg_bedrock)
+st.sidebar.write("Jira TLS:", msg_jira)
 
 
 # =====================================================================
@@ -642,9 +642,51 @@ st.sidebar.write("---")
 st.sidebar.header("AWS Credentials")
 
 aws_region = st.sidebar.text_input("AWS Region", value="us-east-1")
-aws_access_key_id = st.sidebar.text_input("Access Key ID", value=os.getenv("AWS_ACCESS_KEY_ID") or "")
-aws_secret_access_key = st.sidebar.text_input("Secret Access Key", value=os.getenv("AWS_SECRET_ACCESS_KEY") or "", type="password")
-aws_session_token = st.sidebar.text_input("Session Token (optional)", value=os.getenv("AWS_SESSION_TOKEN") or "", type="password")
+aws_access_key_id = st.sidebar.text_input("AWS Access Key ID", value=os.getenv("AWS_ACCESS_KEY_ID") or "")
+aws_secret_access_key = st.sidebar.text_input("AWS Secret Access Key", type="password",
+                                              value=os.getenv("AWS_SECRET_ACCESS_KEY") or "")
+aws_session_token = st.sidebar.text_input("AWS Session Token (optional)", type="password",
+                                          value=os.getenv("AWS_SESSION_TOKEN") or "")
+
+
+# =====================================================================
+# STS TEST FUNCTION + BUTTON
+# =====================================================================
+def test_aws_credentials(region, access_key, secret_key, session_token, verify=True):
+    try:
+        kwargs = {}
+        if access_key and secret_key:
+            kwargs["aws_access_key_id"] = access_key
+            kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            kwargs["aws_session_token"] = session_token
+
+        session = boto3.Session(**kwargs) if kwargs else boto3.Session()
+        sts = session.client("sts", region_name=region, verify=verify)
+        resp = sts.get_caller_identity()
+
+        return True, "STS test successful!", resp
+
+    except botocore.exceptions.ClientError as e:
+        err = e.response.get("Error", {})
+        return False, f"{err.get('Code')}: {err.get('Message')}", None
+    except Exception as e:
+        return False, f"Unexpected error: {e}", None
+
+
+if st.sidebar.button("Test AWS Credentials / STS"):
+    ok, msg, details = test_aws_credentials(
+        aws_region,
+        aws_access_key_id,
+        aws_secret_access_key,
+        aws_session_token,
+        verify=bedrock_verify
+    )
+    if ok:
+        st.sidebar.success(msg)
+        st.sidebar.json(details)
+    else:
+        st.sidebar.error(msg)
 
 
 # =====================================================================
@@ -654,21 +696,21 @@ st.sidebar.write("---")
 st.sidebar.header("Jira Credentials")
 
 jira_base = st.sidebar.text_input("Jira Base URL (e.g. https://company.atlassian.net)")
+
 jira_auth_method = st.sidebar.radio(
-    "Auth Method",
+    "Jira Authentication Method",
     ["api_token", "password"],
     format_func=lambda x: "Email + API Token (Cloud)" if x == "api_token" else "Username + Password (Server)"
 )
 
 jira_email = st.sidebar.text_input("Jira Email (Cloud)")
 jira_api_token = st.sidebar.text_input("Jira API Token", type="password")
-
 jira_username = st.sidebar.text_input("Jira Username (Server)")
 jira_password = st.sidebar.text_input("Jira Password (Server)", type="password")
 
 
 # =====================================================================
-# CREATE BEDROCK CLIENTS
+# CREATE BEDROCK CLIENTS (mgmt + runtime)
 # =====================================================================
 def make_clients():
     session_kwargs = {}
@@ -679,10 +721,11 @@ def make_clients():
         session_kwargs["aws_session_token"] = aws_session_token
 
     session = boto3.Session(**session_kwargs) if session_kwargs else boto3.Session()
-
     cfg = Config(retries={"max_attempts": 3, "mode": "standard"})
+
     mgmt = session.client("bedrock", region_name=aws_region, config=cfg, verify=bedrock_verify)
     runtime = session.client("bedrock-runtime", region_name=aws_region, config=cfg, verify=bedrock_verify)
+
     return mgmt, runtime
 
 
@@ -692,28 +735,24 @@ def make_clients():
 def list_foundation_models(mgmt):
     try:
         resp = mgmt.list_foundation_models()
-        models = [m["modelId"] for m in resp.get("modelSummaries", [])]
-        return True, sorted(models), ""
+        return True, [m["modelId"] for m in resp.get("modelSummaries", [])], ""
     except Exception as e:
-        return False, [], f"Error listing models: {e}"
+        return False, [], str(e)
 
 
 # =====================================================================
-# LIST INFERENCE PROFILES (required for Claude 3.5 Sonnet)
+# LIST INFERENCE PROFILES (REQUIRED FOR CLAUDE 3.5)
 # =====================================================================
 def list_inference_profiles(mgmt):
     try:
         resp = mgmt.list_inference_profiles()
         profiles = [
-            {
-                "name": p.get("inferenceProfileName"),
-                "arn": p.get("inferenceProfileArn")
-            }
+            {"name": p.get("inferenceProfileName"), "arn": p.get("inferenceProfileArn")}
             for p in resp.get("inferenceProfiles", [])
         ]
         return True, profiles, ""
     except Exception as e:
-        return False, [], f"Error listing inference profiles: {e}"
+        return False, [], str(e)
 
 
 # =====================================================================
@@ -730,21 +769,24 @@ def fetch_jira_issue(jira_base, issue_key, auth_method,
     resp = requests.get(url, auth=auth, headers={"Accept": "application/json"}, verify=verify)
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Jira error {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"Jira Error {resp.status_code}: {resp.text}")
 
     return resp.json()
 
 
 def attach_file_to_issue(jira_base, issue_key, file_bytes, filename,
-                         auth_method, email=None, api_token=None, username=None, password=None, verify=True):
+                         auth_method, email=None, api_token=None, username=None, password=None,
+                         verify=True):
 
     url = jira_base.rstrip("/") + f"/rest/api/3/issue/{issue_key}/attachments"
     headers = {"X-Atlassian-Token": "no-check"}
+
     auth = HTTPBasicAuth(email, api_token) if auth_method == "api_token" else HTTPBasicAuth(username, password)
 
     resp = requests.post(url, auth=auth, headers=headers,
                          files={"file": (filename, file_bytes)}, verify=verify)
     resp.raise_for_status()
+
     return resp.json()
 
 
@@ -753,6 +795,7 @@ def create_jira_subtask(jira_base, parent_key, summary, description,
                         email=None, api_token=None, username=None, password=None,
                         verify=True):
 
+    url = jira_base.rstrip("/") + "/rest/api/3/issue"
     auth = HTTPBasicAuth(email, api_token) if auth_method == "api_token" else HTTPBasicAuth(username, password)
 
     payload = {
@@ -765,29 +808,26 @@ def create_jira_subtask(jira_base, parent_key, summary, description,
         }
     }
 
-    url = jira_base.rstrip("/") + "/rest/api/3/issue"
-    resp = requests.post(url, auth=auth, headers={"Content-Type": "application/json"},
+    resp = requests.post(url, auth=auth,
+                         headers={"Content-Type": "application/json"},
                          json=payload, verify=verify)
+
     resp.raise_for_status()
     return resp.json()
 
 
 # =====================================================================
-# CLAUDE 3.5 TESTCASE GENERATION (USING PROFILE ARN)
+# CLAUDE 3.5 SONNET TESTCASE GENERATION (MUST USE PROFILE ARN)
 # =====================================================================
-
 PROMPT_TEMPLATE = (
-    "You are a senior QA engineer. Generate a list of detailed test cases "
-    "in strict JSON array format. Each object MUST include: "
-    "id, title, priority, type, preconditions, steps, expected_result.\n\n"
-    "SUMMARY:\n{summary}\n\n"
-    "DESCRIPTION:\n{description}\n\n"
-    "LABELS:\n{labels}\n\n"
-    "COMMENTS:\n{comments}\n\n"
-    "Output ONLY valid JSON array."
+    "You are a senior QA engineer. Generate a JSON array of test cases. "
+    "Each object MUST contain: id, title, priority, type, preconditions, steps, expected_result.\n\n"
+    "SUMMARY:\n{summary}\n\nDESCRIPTION:\n{description}\n\nLABELS:\n{labels}\n\nCOMMENTS:\n{comments}\n\n"
+    "Return ONLY a valid JSON array."
 )
 
-def generate_testcases(runtime, model_arn, summary, description, labels, comments, max_tokens):
+
+def generate_testcases(runtime, profile_arn, summary, description, labels, comments, max_tokens):
 
     prompt = PROMPT_TEMPLATE.format(
         summary=summary,
@@ -797,16 +837,14 @@ def generate_testcases(runtime, model_arn, summary, description, labels, comment
     )
 
     request_body = {
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.2
     }
 
     try:
         resp = runtime.invoke_model(
-            modelId=model_arn,     # <-- IMPORTANT: USING INFERENCE PROFILE ARN
+            modelId=profile_arn,     # <-- Using inference profile ARN
             contentType="application/json",
             accept="application/json",
             body=json.dumps(request_body)
@@ -819,13 +857,14 @@ def generate_testcases(runtime, model_arn, summary, description, labels, comment
 
     assistant_msg = data["output"]["message"]["content"][0]["text"]
 
+    # Extract JSON array safely
     start = assistant_msg.find("[")
     end = assistant_msg.rfind("]")
 
     try:
-        testcases = json.loads(assistant_msg[start:end+1])
+        return json.loads(assistant_msg[start:end+1])
     except:
-        testcases = [{
+        return [{
             "id": "ERR",
             "title": "Parse Error",
             "priority": "Medium",
@@ -835,12 +874,13 @@ def generate_testcases(runtime, model_arn, summary, description, labels, comment
             "expected_result": ""
         }]
 
-    return testcases
-
 
 # =====================================================================
 # UI — FETCH JIRA ISSUE
 # =====================================================================
+st.write("---")
+st.subheader("Step 1 — Fetch Jira Issue")
+
 left, right = st.columns([2,1])
 with left:
     issue_key = st.text_input("Jira Issue Key (e.g., PROJ-101)")
@@ -856,64 +896,66 @@ with right:
                 verify=jira_verify
             )
             st.session_state["issue"] = issue
-            st.success("Issue fetched!")
+            st.success("Issue fetched successfully!")
         except Exception as e:
             st.error(str(e))
 
 
 # =====================================================================
-# ISSUE PREVIEW + MODEL & PROFILE PICKER
+# ISSUE PREVIEW + PROFILE SELECTION
 # =====================================================================
 if "issue" in st.session_state:
 
-    issue = st.session_state["issue"]
-    fields = issue.get("fields", {})
+    fields = st.session_state["issue"].get("fields", {})
 
-    st.subheader("Jira Preview")
+    st.write("---")
+    st.subheader("Step 2 — Jira Issue Preview")
+
     st.write(f"### {issue_key}: {fields.get('summary','')}")
-    st.write(fields.get("description",""))
+    st.write(fields.get("description", ""))
 
     labels = fields.get("labels", [])
-    comments = [c.get("body") for c in (fields.get("comment") or {}).get("comments", [])]
+    comments = [c["body"] for c in (fields.get("comment") or {}).get("comments", [])]
 
-    # Create Bedrock clients
+    st.write("Labels:", ", ".join(labels))
+
     mgmt, runtime = make_clients()
 
-    st.subheader("Bedrock Inference Profile Selection")
+    st.write("---")
+    st.subheader("Step 3 — Select Inference Profile for Claude 3.5")
 
-    ok_p, profiles, msg_p = list_inference_profiles(mgmt)
-    if not ok_p:
-        st.error(msg_p)
+    ok, profiles, msg = list_inference_profiles(mgmt)
+    if not ok:
+        st.error(msg)
         profiles = []
 
-    profile_labels = [f"{p['name']} — {p['arn']}" for p in profiles]
+    profile_names = [f"{p['name']} — {p['arn']}" for p in profiles]
     profile_arns = [p["arn"] for p in profiles]
 
-    selected = st.selectbox("Select Inference Profile (required for Claude 3.5)", ["-- choose --"] + profile_labels)
+    chosen_profile = st.selectbox("Choose Inference Profile", ["-- Select --"] + profile_names)
 
-    chosen_arn = ""
-    if selected != "-- choose --":
-        idx = profile_labels.index(selected)
-        chosen_arn = profile_arns[idx]
-        st.info(f"Using profile ARN:\n`{chosen_arn}`")
+    profile_arn = ""
+    if chosen_profile != "-- Select --":
+        idx = profile_names.index(chosen_profile)
+        profile_arn = profile_arns[idx]
+        st.info(f"Using profile ARN:\n`{profile_arn}`")
 
 
     # =================================================================
     # GENERATE TESTCASES
     # =================================================================
     st.write("---")
-    st.subheader("Generate Testcases")
+    st.subheader("Step 4 — Generate Testcases")
 
     max_tokens = st.number_input("Max Tokens", value=1500)
 
-    if st.button("Generate (Claude 3.5 Sonnet)"):
-        if not chosen_arn:
-            st.error("Select an inference profile first!")
+    if st.button("Generate with Claude 3.5 Sonnet"):
+        if not profile_arn:
+            st.error("Please select an inference profile.")
         else:
             try:
                 tcs = generate_testcases(
-                    runtime,
-                    chosen_arn,
+                    runtime, profile_arn,
                     fields.get("summary",""),
                     fields.get("description",""),
                     labels,
@@ -929,46 +971,49 @@ if "issue" in st.session_state:
 # =====================================================================
 # TESTCASE EDITOR
 # =====================================================================
-def testcase_df(tcs):
-    return pd.DataFrame([
-        {
-            "id": t.get("id"),
-            "title": t.get("title"),
-            "priority": t.get("priority"),
-            "type": t.get("type"),
-            "preconditions": t.get("preconditions"),
-            "steps": "\n".join(t.get("steps")) if isinstance(t.get("steps"), list) else "",
-            "expected_result": t.get("expected_result")
-        }
-        for t in tcs
-    ])
-
 if "testcases" in st.session_state:
 
-    st.subheader("Review & Edit Testcases")
+    st.write("---")
+    st.subheader("Step 5 — Review & Edit Testcases")
 
-    df = testcase_df(st.session_state["testcases"])
-    edited = st.experimental_data_editor(df, num_rows="dynamic")
+    def build_df(tcs):
+        return pd.DataFrame([
+            {
+                "id": t.get("id"),
+                "title": t.get("title"),
+                "priority": t.get("priority"),
+                "type": t.get("type"),
+                "preconditions": t.get("preconditions"),
+                "steps": "\n".join(t.get("steps")) if isinstance(t.get("steps"), list) else "",
+                "expected_result": t.get("expected_result")
+            }
+            for t in tcs
+        ])
+
+    df = build_df(st.session_state["testcases"])
+    edited_df = st.experimental_data_editor(df, num_rows="dynamic")
 
     st.download_button(
         "Download CSV",
-        edited.to_csv(index=False).encode("utf-8"),
+        edited_df.to_csv(index=False).encode("utf-8"),
         f"{issue_key}_testcases.csv",
-        mime="text/csv"
+        "text/csv"
     )
 
+
+    # =================================================================
+    # JIRA UPLOAD + SUBTASK CREATION
+    # =================================================================
     st.write("---")
-    st.subheader("Upload to Jira")
+    st.subheader("Step 6 — Upload to Jira")
 
     colA, colB = st.columns(2)
 
-    # ------------------------------------------------------------
-    # ATTACH CSV TO ISSUE
-    # ------------------------------------------------------------
+    # Attach CSV
     with colA:
-        if st.button("Attach CSV to Jira"):
+        if st.button("Attach CSV to Jira Issue"):
             try:
-                csv_bytes = edited.to_csv(index=False).encode("utf-8")
+                csv_bytes = edited_df.to_csv(index=False).encode("utf-8")
                 resp = attach_file_to_issue(
                     jira_base, issue_key,
                     csv_bytes, f"{issue_key}_testcases.csv",
@@ -982,22 +1027,17 @@ if "testcases" in st.session_state:
             except Exception as e:
                 st.error(str(e))
 
-
-    # ------------------------------------------------------------
-    # CREATE SUBTASKS
-    # ------------------------------------------------------------
+    # Create subtasks
     with colB:
-
-        project_key = st.text_input("Project Key (e.g., PROJ)")
-        issue_type = st.selectbox("Issue Type", ["Sub-task", "Task", "Bug"])
+        project_key = st.text_input("Project Key (e.g. PROJ)")
+        issue_type = st.selectbox("Subtask Issue Type", ["Sub-task", "Task", "Bug"])
 
         if st.button("Create Subtasks"):
             if not project_key:
                 st.error("Enter project key.")
             else:
                 created = []
-
-                for _, row in edited.iterrows():
+                for _, row in edited_df.iterrows():
                     summary = f"TC-{row['id']}: {row['title'][:80]}"
                     description = (
                         f"*Preconditions:*\n{row['preconditions']}\n\n"
@@ -1006,16 +1046,19 @@ if "testcases" in st.session_state:
                     )
 
                     try:
-                        resp = create_jira_subtask(
-                            jira_base, issue_key,
-                            summary, description,
-                            issue_type, project_key,
+                        res = create_jira_subtask(
+                            jira_base,
+                            issue_key,
+                            summary,
+                            description,
+                            issue_type,
+                            project_key,
                             jira_auth_method,
                             email=jira_email, api_token=jira_api_token,
                             username=jira_username, password=jira_password,
                             verify=jira_verify
                         )
-                        created.append(resp.get("key"))
+                        created.append(res.get("key"))
                     except Exception as e:
                         st.error(str(e))
 
@@ -1024,22 +1067,23 @@ if "testcases" in st.session_state:
 
 
 # =====================================================================
-# FOOTER / TROUBLESHOOTING
+# TROUBLESHOOTING FOOTER
 # =====================================================================
-st.markdown("---")
+st.write("---")
 st.markdown("""
-### ℹ Troubleshooting
+### Troubleshooting Notes
 
-- **Claude 3.5 Sonnet cannot be invoked with a modelId**  
-  → Must use an **Inference Profile ARN**.
+- **Claude 3.5 Sonnet cannot be invoked with a `modelId`.  
+  You *must* use an Inference Profile ARN.  
+  This script handles that automatically.**
 
-- If you don't see profiles:  
-  - Ensure IAM permissions include:  
-    `bedrock:ListInferenceProfiles`, `bedrock:InvokeModel`
+- If inference profiles do not appear →  
+  Ensure IAM permissions include:  
+  `bedrock:ListInferenceProfiles`, `bedrock:InvokeModel`.
 
-- If you get SSL errors:  
-  → Use TLS settings in sidebar.
+- TLS errors → use sidebar SSL options.
 
-- If output fails to parse:  
-  → The model added explanations; extraction logic already handles most cases.
+- Parse errors → model sometimes adds prose; script extracts JSON automatically.
+
+- Use the STS button to verify AWS credentials.
 """)
