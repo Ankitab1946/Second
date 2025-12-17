@@ -8,28 +8,25 @@ from botocore.exceptions import ClientError, BotoCoreError
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------
-# Load environment variables from .env
+# Load environment variables
 # ---------------------------------------------------------------------
 load_dotenv()
 
 
 class BedrockService:
     """
-    Robust AWS Bedrock wrapper for Claude 3.7 Sonnet (EU)
-
-    Features:
-    - Loads credentials from .env
-    - Supports AWS_SESSION_TOKEN
-    - SSL verification disabled (corporate proxy safe)
-    - Hardened JSON extraction & repair
-    - Retry + backoff
+    Production-grade AWS Bedrock wrapper with:
+    - .env credential loading
+    - SSL verify disabled (corporate proxy safe)
+    - Hardened JSON extraction
+    - Automatic retry with reduced prompt
     """
 
     def __init__(self):
 
-        # -------------------------------------------------------------
-        # Load AWS credentials
-        # -------------------------------------------------------------
+        # -----------------------------
+        # AWS config
+        # -----------------------------
         self.aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         self.aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.aws_session_token = os.getenv("AWS_SESSION_TOKEN")
@@ -42,13 +39,9 @@ class BedrockService:
 
         if not self.aws_access_key or not self.aws_secret_key:
             raise RuntimeError(
-                "Missing AWS credentials. "
-                "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"
+                "Missing AWS credentials. Check .env file."
             )
 
-        # -------------------------------------------------------------
-        # Create boto3 session
-        # -------------------------------------------------------------
         session = boto3.Session(
             aws_access_key_id=self.aws_access_key,
             aws_secret_access_key=self.aws_secret_key,
@@ -56,12 +49,9 @@ class BedrockService:
             region_name=self.region
         )
 
-        # -------------------------------------------------------------
-        # Bedrock Runtime Client (SSL verify disabled)
-        # -------------------------------------------------------------
         self.client = session.client(
             "bedrock-runtime",
-            verify=False,  # 🔥 FIX for corporate SSL
+            verify=False,  # corporate SSL fix
             config=Config(
                 retries={"max_attempts": 3, "mode": "standard"},
                 read_timeout=120,
@@ -70,45 +60,35 @@ class BedrockService:
         )
 
     # -----------------------------------------------------------------
-    # 🔥 HARDENED JSON EXTRACTOR & REPAIR
+    # HARDENED JSON PARSER
     # -----------------------------------------------------------------
     def _safe_json_parse(self, text: str):
-        """
-        Extracts and repairs JSON from LLM output.
-        Handles:
-        - Extra text
-        - Unterminated strings
-        - Newlines inside values
-        - Markdown fences
-        """
 
-        # Remove markdown fences
         cleaned = (
             text.replace("```json", "")
                 .replace("```", "")
                 .strip()
         )
 
-        # Extract first JSON array
         match = re.search(r"\[\s*{.*?}\s*]", cleaned, re.DOTALL)
         if not match:
             raise ValueError("No JSON array found in model output.")
 
         json_text = match.group(0)
 
-        # Normalize whitespace
-        json_text = json_text.replace("\r", " ").replace("\n", " ")
+        json_text = (
+            json_text.replace("\r", " ")
+                     .replace("\n", " ")
+                     .replace("“", '"')
+                     .replace("”", '"')
+        )
 
-        # Fix smart quotes if any
-        json_text = json_text.replace("“", '"').replace("”", '"')
-
-        # Attempt strict parse
         try:
             return json.loads(json_text)
         except json.JSONDecodeError:
             pass
 
-        # Escape unescaped quotes inside values (best-effort)
+        # Best-effort quote repair
         json_text = re.sub(r'(?<!\\)"(?=[^:,}\]])', r'\"', json_text)
 
         try:
@@ -116,17 +96,52 @@ class BedrockService:
         except json.JSONDecodeError as e:
             raise ValueError(
                 "Model returned malformed JSON that could not be repaired.\n"
-                f"Error: {str(e)}\n"
-                f"Snippet:\n{json_text[:1500]}"
+                f"Error: {e}\n"
+                f"Snippet:\n{json_text[:1200]}"
             )
 
     # -----------------------------------------------------------------
-    # MAIN: Invoke Bedrock Claude
+    # REDUCED PROMPT (SAFE FALLBACK)
     # -----------------------------------------------------------------
-    def generate_testcases(self, prompt: str, max_tokens: int = 1800, retries: int = 3):
+    def _build_reduced_prompt(self, original_prompt: str) -> str:
         """
-        Calls Claude Sonnet and returns parsed JSON test cases.
+        Aggressively simplified prompt used when JSON fails.
         """
+
+        return f"""
+You MUST return VALID JSON only.
+
+STRICT RULES:
+- Generate MAXIMUM 5 test cases
+- Use SIMPLE sentences only
+- NO line breaks inside strings
+- NO quotes inside text
+- SHORT titles and steps
+- DO NOT truncate output
+
+JSON FORMAT:
+[
+  {{
+    "id": "TC-001",
+    "title": "Short title",
+    "preconditions": "Short text",
+    "steps": [
+      {{"action": "Do something", "expected": "Result"}},
+      {{"action": "Do next thing", "expected": "Result"}}
+    ],
+    "priority": "Medium",
+    "type": "Functional",
+    "expected_result": "Overall result"
+  }}
+]
+
+RETURN JSON ONLY.
+"""
+
+    # -----------------------------------------------------------------
+    # INVOKE MODEL
+    # -----------------------------------------------------------------
+    def _invoke(self, prompt: str, max_tokens: int):
 
         payload = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -136,26 +151,46 @@ class BedrockService:
             ]
         }
 
+        response = self.client.invoke_model(
+            modelId=self.model_id,
+            body=json.dumps(payload).encode("utf-8")
+        )
+
+        raw = response["body"].read().decode("utf-8")
+        parsed = json.loads(raw)
+        return parsed["content"][0]["text"]
+
+    # -----------------------------------------------------------------
+    # MAIN ENTRY POINT
+    # -----------------------------------------------------------------
+    def generate_testcases(self, prompt: str, max_tokens: int = 1800, retries: int = 2):
+        """
+        1️⃣ Try full prompt
+        2️⃣ If JSON fails → retry with reduced prompt
+        """
+
         last_error = None
 
-        for attempt in range(1, retries + 1):
-            try:
-                response = self.client.invoke_model(
-                    modelId=self.model_id,
-                    body=json.dumps(payload).encode("utf-8")
-                )
+        # -----------------------------
+        # Attempt 1: Full prompt
+        # -----------------------------
+        try:
+            text = self._invoke(prompt, max_tokens)
+            return self._safe_json_parse(text)
+        except Exception as e:
+            last_error = e
 
-                raw = response["body"].read().decode("utf-8")
-                parsed = json.loads(raw)
-
-                model_text = parsed["content"][0]["text"]
-
-                return self._safe_json_parse(model_text)
-
-            except (ClientError, BotoCoreError, ValueError) as e:
-                last_error = e
-                time.sleep(attempt * 1.5)
+        # -----------------------------
+        # Attempt 2: Reduced prompt
+        # -----------------------------
+        try:
+            reduced_prompt = self._build_reduced_prompt(prompt)
+            text = self._invoke(reduced_prompt, 1200)
+            return self._safe_json_parse(text)
+        except Exception as e:
+            last_error = e
 
         raise RuntimeError(
-            f"Bedrock model invocation failed after {retries} attempts: {last_error}"
+            "Bedrock model invocation failed after retry with reduced prompt.\n"
+            f"Last error: {last_error}"
         )
