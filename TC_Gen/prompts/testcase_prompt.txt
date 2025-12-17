@@ -59,10 +59,27 @@ STRICT JSON OUTPUT STRUCTURE
 ]
 
 =========================================================
-CRITICAL INSTRUCTIONS
+CRITICAL INSTRUCTIONS CRITICAL OUTPUT RULES (MANDATORY):
 =========================================================
-- Return ONLY JSON.
-- JSON must be a list of test case objects.
-- No markdown, no prose, no comments.
-- All strings must be properly escaped.
-- The output must be valid JSON that can be parsed without error.
+
+1. Output MUST be valid JSON.
+2. DO NOT use line breaks inside string values.
+3. DO NOT use numbered lists inside strings.
+4. Use simple sentences only.
+5. Use ONLY these keys (case-sensitive):
+   - id
+   - title
+   - preconditions
+   - steps
+   - action
+   - expected
+   - priority
+   - type
+   - expected_result
+6. Each "steps" item MUST be:
+   { "action": "<text>", "expected": "<text>" }
+7. DO NOT use quotes inside text.
+8. If unsure, shorten the text.
+9. Never truncate output.
+10. Return ONLY JSON.
+
