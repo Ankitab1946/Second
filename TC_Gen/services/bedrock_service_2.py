@@ -123,7 +123,7 @@ class BedrockService:
     # -----------------------------------------------------------------
     # MAIN: Invoke Bedrock Claude
     # -----------------------------------------------------------------
-    def generate_testcases(self, prompt: str, max_tokens: int = 2500, retries: int = 3):
+    def generate_testcases(self, prompt: str, max_tokens: int = 1800, retries: int = 3):
         """
         Calls Claude Sonnet and returns parsed JSON test cases.
         """
