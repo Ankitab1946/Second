@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 
 from services.bedrock_service import BedrockService
 from services.jira_service import JiraService
@@ -52,9 +51,6 @@ jira_user = st.sidebar.text_input("Username / Email")
 jira_pass = st.sidebar.text_input("API Token / Password", type="password")
 project_key = st.sidebar.text_input("Project Key", placeholder="PRJ")
 
-# ============================================================
-# CONNECT TO JIRA
-# ============================================================
 if st.sidebar.button("Connect to Jira"):
     try:
         st.session_state["jira_service"] = JiraService(
@@ -77,69 +73,27 @@ bedrock = BedrockService()
 # STORY SELECTION
 # ============================================================
 st.sidebar.header("📌 Story Selection")
-
-story_mode = st.sidebar.radio(
-    "Select Method",
-    ["Enter Story Key", "Search Story"]
-)
+story_mode = st.sidebar.radio("Select Method", ["Enter Story Key", "Search Story"])
 
 jira = st.session_state["jira_service"]
 
 if st.session_state["connected"] and jira:
 
-    # -----------------------------
-    # MANUAL STORY KEY
-    # -----------------------------
     if story_mode == "Enter Story Key":
         manual_key = st.sidebar.text_input("Enter Story Key", placeholder="PRJ-2093")
 
         if st.sidebar.button("Fetch Story"):
-            try:
-                issue = jira.get_issue(manual_key)
+            issue = jira.get_issue(manual_key)
 
-                st.session_state["story_key"] = manual_key
-                st.session_state["story"] = issue
+            st.session_state["story_key"] = manual_key
+            st.session_state["story"] = issue
 
-                # 🔥 RESET OLD DATA
-                st.session_state["testcases"] = None
-                st.session_state["last_prompt"] = None
-                st.session_state["last_story_key"] = manual_key
+            # 🔥 Clear old data
+            st.session_state["testcases"] = None
+            st.session_state["last_prompt"] = None
+            st.session_state["last_story_key"] = manual_key
 
-                st.success(f"Story {manual_key} loaded")
-            except Exception as e:
-                st.error(f"Failed to fetch story: {e}")
-
-    # -----------------------------
-    # SEARCH STORY
-    # -----------------------------
-    else:
-        search_text = st.sidebar.text_input("Search Summary Text")
-
-        if st.sidebar.button("Search"):
-            try:
-                results = jira.search_issues_by_summary(project_key, search_text)
-                issues = results.get("issues", [])
-
-                options = [f"{i['key']} - {i['fields']['summary']}" for i in issues]
-
-                if options:
-                    selected = st.sidebar.selectbox("Select Story", options)
-                    if selected:
-                        key = selected.split(" ")[0]
-                        issue = jira.get_issue(key)
-
-                        st.session_state["story_key"] = key
-                        st.session_state["story"] = issue
-
-                        # 🔥 RESET OLD DATA
-                        st.session_state["testcases"] = None
-                        st.session_state["last_prompt"] = None
-                        st.session_state["last_story_key"] = key
-
-                        st.success(f"Story {key} loaded")
-
-            except Exception as e:
-                st.error(f"Search failed: {e}")
+            st.success(f"Story {manual_key} loaded")
 
 # ============================================================
 # DISPLAY STORY
@@ -152,7 +106,7 @@ if st.session_state["story"]:
     st.write(story["fields"]["summary"])
 
     st.write("### Description")
-    st.write(story["fields"].get("description", "No description"))
+    st.write(story["fields"].get("description", ""))
 
 # ============================================================
 # GENERATE TEST CASES
@@ -160,7 +114,6 @@ if st.session_state["story"]:
 st.header("🧠 Generate Test Cases")
 
 if st.session_state["story"]:
-
     uploaded_templates = st.file_uploader(
         "Upload Predefined Test Case Templates (CSV / Excel)",
         type=["csv", "xlsx"]
@@ -173,45 +126,70 @@ if st.session_state["story"]:
 
     if st.button("Generate Test Cases"):
 
+        story = st.session_state["story"]
+
         summary = clean_text(story["fields"]["summary"])
         description = clean_text(story["fields"].get("description", ""))
+
+        # Acceptance Criteria (example custom field)
+        acceptance_criteria = clean_text(
+            story["fields"].get("customfield_15900", "")
+        )
+
+        # Comments
+        comments_text = ""
+        try:
+            comments = story["fields"]["comment"]["comments"]
+            comments_text = " ".join([clean_text(c["body"]) for c in comments])
+        except Exception:
+            pass
+
+        full_requirement_text = f"""
+SUMMARY:
+{summary}
+
+DESCRIPTION:
+{description}
+
+ACCEPTANCE CRITERIA:
+{acceptance_criteria}
+
+COMMENTS:
+{comments_text}
+"""
+
         keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
         templates = load_predefined_templates(uploaded_templates)
         templates_filtered = filter_templates_by_keywords(
             templates,
             keywords,
-            summary + " " + description
+            full_requirement_text
         )
 
         prompt = build_prompt(
-            summary,
-            description,
-            keywords,
-            templates_filtered
+            summary=summary,
+            jira_description=full_requirement_text,
+            keywords=keywords,
+            templates=templates_filtered
         )
 
-        # 🔥 FORCE REGENERATION WHEN CONTEXT CHANGES
         should_regenerate = (
             st.session_state["last_prompt"] != prompt or
             st.session_state["last_story_key"] != st.session_state["story_key"]
         )
 
         if should_regenerate:
-            try:
-                raw = bedrock.generate_testcases(prompt)
-                testcases = validate_testcases(raw)
+            raw = bedrock.generate_testcases(prompt)
+            testcases = validate_testcases(raw)
 
-                st.session_state["testcases"] = testcases
-                st.session_state["last_prompt"] = prompt
-                st.session_state["last_story_key"] = st.session_state["story_key"]
+            st.session_state["testcases"] = testcases
+            st.session_state["last_prompt"] = prompt
+            st.session_state["last_story_key"] = st.session_state["story_key"]
 
-                st.success(f"Generated {len(testcases)} test cases")
-
-            except Exception as e:
-                st.error(f"Test case generation failed: {e}")
+            st.success(f"Generated {len(testcases)} test cases")
         else:
-            st.info("Test cases already generated for this story & inputs")
+            st.info("Test cases already generated for this story")
 
 # ============================================================
 # DISPLAY GENERATED TEST CASES
@@ -234,52 +212,3 @@ if st.session_state["testcases"]:
         export_to_json(st.session_state["testcases"]),
         file_name="testcases.json"
     )
-
-# ============================================================
-# XRAY PUSH
-# ============================================================
-st.header("🚀 Push to Jira Xray")
-
-if st.session_state["story"] and st.session_state["testcases"] and st.session_state["connected"]:
-
-    xray = XrayService(
-        jira=st.session_state["jira_service"],
-        project_key=project_key
-    )
-
-    mode = st.radio("Test Set Mode", ["Create New Test Set", "Use Existing Test Set"])
-    testset_key = None
-
-    if mode == "Create New Test Set":
-        name = st.text_input("Test Set Name", value=f"{st.session_state['story_key']}-TestSet")
-
-        if st.button("Create Test Set"):
-            try:
-                testset_key = xray.create_testset(name)
-                xray.link_testset_to_story(testset_key, st.session_state["story_key"])
-                st.success(f"Created Test Set {testset_key}")
-            except Exception as e:
-                st.error(e)
-
-    else:
-        results = jira.search_issues_by_project(project_key, "Test Set")
-        options = [f"{i['key']} - {i['fields']['summary']}" for i in results.get("issues", [])]
-        if options:
-            selection = st.selectbox("Select Test Set", options)
-            testset_key = selection.split(" ")[0]
-
-    if testset_key and st.button("Push Test Cases to Xray"):
-        try:
-            created = []
-
-            for tc in st.session_state["testcases"]:
-                key = xray.create_xray_test(tc["title"], tc.get("preconditions", ""))
-                xray.add_test_steps(key, tc["steps"])
-                xray.link_test_to_story(key, st.session_state["story_key"])
-                created.append(key)
-
-            xray.add_tests_to_testset(testset_key, created)
-            st.success(f"Pushed {len(created)} tests to Xray")
-
-        except Exception as e:
-            st.error(f"Xray push failed: {e}")
