@@ -1,178 +1,102 @@
-
 import json
-import re
 import pandas as pd
 from io import BytesIO
 
 
-# -------------------------------------------------------------------------
-# Load predefined templates (CSV)
-# -------------------------------------------------------------------------
-def load_predefined_templates(uploaded_file):
-    """
-    Reads a CSV or Excel file uploaded by the user.
+def clean_text(text):
+    return " ".join(str(text).split())
 
-    Expected columns:
-    - FeatureKeyword
-    - TestCaseTitle
-    - Preconditions
-    - Steps
-    - ExpectedResult
-    - Priority
-    - Type
-    """
-    if uploaded_file is None:
+
+def load_predefined_templates(uploaded_file):
+    if not uploaded_file:
         return []
 
-    filename = uploaded_file.name.lower()
-
-    if filename.endswith(".csv"):
+    if uploaded_file.name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
     else:
         df = pd.read_excel(uploaded_file)
 
-    df = df.fillna("")
-
-    templates = df.to_dict(orient="records")
-    return templates
+    return df.fillna("").to_dict(orient="records")
 
 
-# -------------------------------------------------------------------------
-# Filter templates using keywords + Jira text
-# -------------------------------------------------------------------------
 def filter_templates_by_keywords(templates, keywords, jira_text):
-    result = []
-    combined = jira_text.lower() + " " + " ".join(keywords).lower()
+    if not templates or not keywords:
+        return []
+
+    results = []
+    jira_text = jira_text.lower()
+    keywords = [k.lower() for k in keywords]
 
     for t in templates:
-        kw = t.get("FeatureKeyword", "")
-        if kw and kw.lower() in combined:
-            result.append(t)
+        score = 0
+        searchable = " ".join([
+            str(t.get("FeatureKeyword", "")),
+            str(t.get("TestCaseTitle", "")),
+            str(t.get("Category", "")),
+            str(t.get("Tags", "")),
+        ]).lower()
 
-    return result
+        for kw in keywords:
+            if kw in searchable:
+                score += 2
+            if kw in jira_text:
+                score += 1
+
+        if score > 0:
+            t["_match_score"] = score
+            results.append(t)
+
+    results.sort(key=lambda x: x["_match_score"], reverse=True)
+    return results
 
 
-# -------------------------------------------------------------------------
-# Build AI prompt
-# -------------------------------------------------------------------------
-def build_prompt(jira_summary, jira_description, keywords, templates):
-    """
-    Builds a structured prompt for Claude Sonnet 3.7.
-
-    Output must be JSON array:
-    [
-      {
-        "id": "TC-001",
-        "title": "",
-        "preconditions": "",
-        "steps": [
-           {"action": "...", "expected": "..."}
-        ],
-        "priority": "High/Medium/Low",
-        "type": "Functional/Regression"
-      }
-    ]
-    """
-
-    templates_text = ""
+def build_prompt(summary, jira_description, keywords, templates):
+    template_block = ""
     for t in templates:
-        templates_text += f"""
-- Title: {t.get('TestCaseTitle')}
-  Preconditions: {t.get('Preconditions')}
-  Steps: {t.get('Steps')}
-  Expected: {t.get('ExpectedResult')}
-  Priority: {t.get('Priority')}
-  Type: {t.get('Type')}
+        template_block += f"""
+TEMPLATE:
+Title: {t.get('TestCaseTitle')}
+Steps: {t.get('Steps')}
+Expected: {t.get('ExpectedResult')}
+---
 """
 
-    prompt = f"""
-You are a senior QA Test Manager generating detailed Xray test cases.
+    return f"""
+You are a senior QA engineer.
 
-JIRA STORY SUMMARY:
-{jira_summary}
-
-JIRA STORY DESCRIPTION:
+REQUIREMENTS:
 {jira_description}
 
 KEYWORDS:
 {", ".join(keywords)}
 
-MATCHED PREDEFINED TEST TEMPLATES:
-{templates_text if templates_text else "None"}
+PREDEFINED TEMPLATES:
+{template_block}
 
-REQUIREMENTS:
-1. Generate functional & negative test cases.
-2. Expand & adapt the predefined templates.
-3. Ensure steps are clear, numbered, actionable.
-4. Return STRICT JSON only, no commentary.
+Generate test cases based on complexity:
+- Simple: 5–8
+- Medium: 8–15
+- Complex: 15–25
 
-JSON FORMAT:
-[
-  {{
-    "id": "TC-001",
-    "title": "",
-    "preconditions": "",
-    "steps": [
-      {{"action": "", "expected": ""}},
-      {{"action": "", "expected": ""}}
-    ],
-    "priority": "Medium",
-    "type": "Functional"
-  }}
-]
-
-RETURN ONLY JSON.
+Return a list of test cases in JSON or Python list format.
 """
 
-    return prompt
-
-
-# -------------------------------------------------------------------------
-# Validate JSON test case objects
-# -------------------------------------------------------------------------
-# def validate_testcases(data):
-#     """
-#     Ensures AI output is a list of valid test case dicts.
-#     """
-#     if not isinstance(data, list):
-#         raise ValueError("AI output is not a list.")
-
-#     cleaned = []
-
-#     for idx, tc in enumerate(data, start=1):
-#         if not isinstance(tc, dict):
-#             continue
-
-#         cleaned.append({
-#             "id": tc.get("id") or f"TC-{idx:03d}",
-#             "title": tc.get("title", "").strip(),
-#             "preconditions": tc.get("preconditions", "").strip(),
-#             "steps": tc.get("steps", []),
-#             "priority": tc.get("priority", "Medium"),
-#             "type": tc.get("type", "Functional"),
-#             "expected_result": tc.get("expected_result", tc.get("expected", "")).strip()
-#         })
-
-#     return cleaned
 
 def validate_testcases(data):
-    if not isinstance(data, list):
-        raise ValueError("AI output is not a list")
-
     cleaned = []
 
     for i, tc in enumerate(data, start=1):
         steps = []
         for s in tc.get("steps", []):
             steps.append({
-                "action": s.get("action") or s.get("actions") or "",
-                "expected": s.get("expected") or s.get("Expected") or ""
+                "action": s.get("action") or s.get("actions", ""),
+                "expected": s.get("expected") or s.get("Expected", "")
             })
 
         cleaned.append({
             "id": tc.get("id", f"TC-{i:03d}"),
             "title": tc.get("title", "").strip(),
-            "preconditions": tc.get("preconditions", "").replace("\n", " ").strip(),
+            "preconditions": clean_text(tc.get("preconditions", "")),
             "steps": steps,
             "priority": tc.get("priority", "Medium"),
             "type": tc.get("type", "Functional"),
@@ -182,31 +106,14 @@ def validate_testcases(data):
     return cleaned
 
 
-
-# -------------------------------------------------------------------------
-# Excel Export
-# -------------------------------------------------------------------------
-def export_to_excel(testcases: list):
-    """
-    Convert test cases to Excel binary for Streamlit download.
-    """
+def export_to_excel(testcases):
     df = pd.DataFrame(testcases)
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="TestCases")
-    output.seek(0)
-    return output
+    buffer = BytesIO()
+    df.to_excel(buffer, index=False)
+    buffer.seek(0)
+    return buffer
 
 
-# -------------------------------------------------------------------------
-# JSON export helper
-# -------------------------------------------------------------------------
 def export_to_json(testcases):
-    return json.dumps(testcases, indent=2).encode("utf-8")
+    return json.dumps(testcases, indent=2)
 
-
-# -------------------------------------------------------------------------
-# Utility: Clean text for LLM
-# -------------------------------------------------------------------------
-def clean_text(text):
-    return re.sub(r"\s+", " ", text or "").strip()
