@@ -37,6 +37,12 @@ defaults = {
     "testcases": None
 }
 
+if "last_prompt" not in st.session_state:
+    st.session_state["last_prompt"] = None
+
+if "last_story_key" not in st.session_state:
+    st.session_state["last_story_key"] = None
+
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -106,14 +112,32 @@ if st.session_state["connected"] and jira_service:
     if story_mode == "Enter Story Key":
         manual_key = st.sidebar.text_input("Enter Story Key", placeholder="PRJ-2093")
 
+        # if st.sidebar.button("Fetch Story"):
+        #     try:
+        #         issue = jira_service.get_issue(manual_key)
+        #         st.session_state["story_key"] = manual_key
+        #         st.session_state["story"] = issue
+        #         st.success(f"Story {manual_key} loaded successfully.")
+        #     except Exception as e:
+        #         st.error(f"Failed to load story: {str(e)}")
+
         if st.sidebar.button("Fetch Story"):
             try:
                 issue = jira_service.get_issue(manual_key)
+        
+                # Store new story
                 st.session_state["story_key"] = manual_key
                 st.session_state["story"] = issue
+        
+                # 🔥 FIX-1: CLEAR OLD GENERATED DATA
+                st.session_state["testcases"] = None
+                st.session_state["last_prompt"] = None
+                st.session_state["last_story_key"] = manual_key
+        
                 st.success(f"Story {manual_key} loaded successfully.")
             except Exception as e:
                 st.error(f"Failed to load story: {str(e)}")
+
 
     # --------------------------------------------------------
     # OPTION B — Search Story
@@ -209,39 +233,71 @@ if st.session_state["story"]:
 
     keywords_input = st.text_input("Enter Keywords (comma-separated)", placeholder="login, authentication, negative")
 
-    if st.button("Generate Test Cases"):
+    # if st.button("Generate Test Cases"):
+    #     try:
+    #         # -------------------------------------------
+    #         # Prepare Inputs
+    #         # -------------------------------------------
+    #         keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+
+    #         summary = clean_text(st.session_state["story"]["fields"]["summary"])
+    #         description = clean_text(st.session_state["story"]["fields"].get("description", ""))
+
+    #         # -------------------------------------------
+    #         # Templates
+    #         # -------------------------------------------
+    #         templates = load_predefined_templates(uploaded_templates)
+    #         filtered = filter_templates_by_keywords(templates, keywords, summary + description)
+
+    #         # -------------------------------------------
+    #         # Build AI Prompt
+    #         # -------------------------------------------
+    #         prompt = build_prompt(summary, description, keywords, filtered)
+
+    #         # -------------------------------------------
+    #         # Call AWS Bedrock (Claude Sonnet 3.7)
+    #         # -------------------------------------------
+    #         raw_output = bedrock.generate_testcases(prompt)
+
+    #         testcases = validate_testcases(raw_output)
+
+    #         st.session_state["testcases"] = testcases
+    #         st.success(f"Generated {len(testcases)} test cases successfully!")
+
+    #     except Exception as e:
+    #         st.error(f"Test Case Generation Failed: {str(e)}")
+if st.button("Generate Test Cases"):
+
+    # Build prompt (depends on story + keywords + templates)
+    prompt = build_prompt(
+        summary,
+        description,
+        keywords,
+        templates_filtered
+    )
+
+    # 🔥 FIX-2: Force regeneration when context changes
+    should_regenerate = (
+        st.session_state["last_prompt"] != prompt or
+        st.session_state["last_story_key"] != st.session_state["story_key"]
+    )
+
+    if should_regenerate:
         try:
-            # -------------------------------------------
-            # Prepare Inputs
-            # -------------------------------------------
-            keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
-
-            summary = clean_text(st.session_state["story"]["fields"]["summary"])
-            description = clean_text(st.session_state["story"]["fields"].get("description", ""))
-
-            # -------------------------------------------
-            # Templates
-            # -------------------------------------------
-            templates = load_predefined_templates(uploaded_templates)
-            filtered = filter_templates_by_keywords(templates, keywords, summary + description)
-
-            # -------------------------------------------
-            # Build AI Prompt
-            # -------------------------------------------
-            prompt = build_prompt(summary, description, keywords, filtered)
-
-            # -------------------------------------------
-            # Call AWS Bedrock (Claude Sonnet 3.7)
-            # -------------------------------------------
             raw_output = bedrock.generate_testcases(prompt)
-
             testcases = validate_testcases(raw_output)
 
             st.session_state["testcases"] = testcases
-            st.success(f"Generated {len(testcases)} test cases successfully!")
+            st.session_state["last_prompt"] = prompt
+            st.session_state["last_story_key"] = st.session_state["story_key"]
+
+            st.success(f"Generated {len(testcases)} test cases.")
 
         except Exception as e:
-            st.error(f"Test Case Generation Failed: {str(e)}")
+            st.error(f"Test Case generation failed: {e}")
+
+    else:
+        st.info("Test cases already generated for this story and inputs.")
 
 # ============================================================
 # DISPLAY GENERATED TEST CASES
