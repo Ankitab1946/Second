@@ -130,30 +130,57 @@ RETURN ONLY JSON.
 # -------------------------------------------------------------------------
 # Validate JSON test case objects
 # -------------------------------------------------------------------------
+# def validate_testcases(data):
+#     """
+#     Ensures AI output is a list of valid test case dicts.
+#     """
+#     if not isinstance(data, list):
+#         raise ValueError("AI output is not a list.")
+
+#     cleaned = []
+
+#     for idx, tc in enumerate(data, start=1):
+#         if not isinstance(tc, dict):
+#             continue
+
+#         cleaned.append({
+#             "id": tc.get("id") or f"TC-{idx:03d}",
+#             "title": tc.get("title", "").strip(),
+#             "preconditions": tc.get("preconditions", "").strip(),
+#             "steps": tc.get("steps", []),
+#             "priority": tc.get("priority", "Medium"),
+#             "type": tc.get("type", "Functional"),
+#             "expected_result": tc.get("expected_result", tc.get("expected", "")).strip()
+#         })
+
+#     return cleaned
+
 def validate_testcases(data):
-    """
-    Ensures AI output is a list of valid test case dicts.
-    """
     if not isinstance(data, list):
-        raise ValueError("AI output is not a list.")
+        raise ValueError("AI output is not a list")
 
     cleaned = []
 
-    for idx, tc in enumerate(data, start=1):
-        if not isinstance(tc, dict):
-            continue
+    for i, tc in enumerate(data, start=1):
+        steps = []
+        for s in tc.get("steps", []):
+            steps.append({
+                "action": s.get("action") or s.get("actions") or "",
+                "expected": s.get("expected") or s.get("Expected") or ""
+            })
 
         cleaned.append({
-            "id": tc.get("id") or f"TC-{idx:03d}",
+            "id": tc.get("id", f"TC-{i:03d}"),
             "title": tc.get("title", "").strip(),
-            "preconditions": tc.get("preconditions", "").strip(),
-            "steps": tc.get("steps", []),
+            "preconditions": tc.get("preconditions", "").replace("\n", " ").strip(),
+            "steps": steps,
             "priority": tc.get("priority", "Medium"),
             "type": tc.get("type", "Functional"),
-            "expected_result": tc.get("expected_result", tc.get("expected", "")).strip()
+            "expected_result": tc.get("expected_result", "")
         })
 
     return cleaned
+
 
 
 # -------------------------------------------------------------------------
