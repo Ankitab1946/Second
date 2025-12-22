@@ -30,53 +30,30 @@ class XrayService:
             headers=self.headers,
             verify=False
         )
-
         r.raise_for_status()
         return r.json()["key"]
 
     # ---------------------------------------------------
-    # Add Test Steps
+    # Add Test Steps (ONE BY ONE – XRAY SAFE)
     # ---------------------------------------------------
     def add_test_steps(self, test_key, steps):
-        payload = {
-            "steps": [
-                {
-                    "action": s["action"],
-                    "expectedResult": s["expected"]
+        for s in steps:
+            payload = {
+                "step": {
+                    "action": s.get("action", ""),
+                    "data": "",
+                    "result": s.get("expected", "")
                 }
-                for s in steps
-            ]
-        }
+            }
 
-        r = requests.post(
-            f"{self.base_url}/rest/raven/1.0/api/test/{test_key}/step",
-            json=payload,
-            auth=self.auth,
-            headers=self.headers,
-            verify=False
-        )
-
-        r.raise_for_status()
-
-    # ---------------------------------------------------
-    # Link Test to Story
-    # ---------------------------------------------------
-    def link_test_to_story(self, test_key, story_key):
-        payload = {
-            "type": {"name": "Tests"},
-            "inwardIssue": {"key": test_key},
-            "outwardIssue": {"key": story_key}
-        }
-
-        r = requests.post(
-            f"{self.base_url}/rest/api/2/issueLink",
-            json=payload,
-            auth=self.auth,
-            headers=self.headers,
-            verify=False
-        )
-
-        r.raise_for_status()
+            r = requests.post(
+                f"{self.base_url}/rest/raven/1.0/api/test/{test_key}/step",
+                json=payload,
+                auth=self.auth,
+                headers=self.headers,
+                verify=False
+            )
+            r.raise_for_status()
 
     # ---------------------------------------------------
     # Create Test Set
@@ -97,12 +74,31 @@ class XrayService:
             headers=self.headers,
             verify=False
         )
-
         r.raise_for_status()
         return r.json()["key"]
 
     # ---------------------------------------------------
-    # Add Tests to Test Set
+    # Link Test Set → Story
+    # (Shows as "Tested By" in Story, "Tests" in Test Set)
+    # ---------------------------------------------------
+    def link_testset_to_story(self, testset_key, story_key):
+        payload = {
+            "type": {"name": "Tests"},
+            "inwardIssue": {"key": testset_key},
+            "outwardIssue": {"key": story_key}
+        }
+
+        r = requests.post(
+            f"{self.base_url}/rest/api/2/issueLink",
+            json=payload,
+            auth=self.auth,
+            headers=self.headers,
+            verify=False
+        )
+        r.raise_for_status()
+
+    # ---------------------------------------------------
+    # Add Tests → Test Set
     # ---------------------------------------------------
     def add_tests_to_testset(self, testset_key, test_keys):
         payload = {"add": test_keys}
@@ -114,5 +110,4 @@ class XrayService:
             headers=self.headers,
             verify=False
         )
-
         r.raise_for_status()
