@@ -51,62 +51,99 @@ def filter_templates_by_keywords(templates, keywords, jira_text):
 
 
 def build_prompt(summary, jira_description, keywords, templates, test_type):
+    """
+    ETL MODE IS MANDATORY.
+    Jira text is used for DATA CONTEXT ONLY and cannot override ETL intent.
+    """
+
+    # 1️⃣ ETL AUTHORITY (HIGHEST PRIORITY)
+    etl_authority = """
+YOU ARE A SENIOR ETL / DATA QUALITY TEST ENGINEER.
+
+THIS IS A DATA PIPELINE VALIDATION TASK.
+THIS IS NOT APPLICATION OR UI TESTING.
+
+JIRA TEXT IS PROVIDED ONLY TO UNDERSTAND:
+- DATA ENTITIES
+- BUSINESS RULES
+- TRANSFORMATION LOGIC
+
+THE TESTING DOMAIN MUST NEVER CHANGE FROM ETL / DATA QUALITY.
+"""
+
+    # 2️⃣ ETL TEST TAXONOMY
+    etl_test_taxonomy = """
+ALLOWED ETL / DATA QUALITY TEST TYPES:
+1. Record Count Validation
+2. Source-to-Target Reconciliation
+3. Aggregation Validation (SUM, COUNT, AVG, MIN, MAX)
+4. Duplicate / Distinct Validation
+5. Null / Mandatory Column Validation
+6. Data Type Validation
+7. Range / Threshold Validation
+8. Referential Integrity Validation
+9. Historical vs Current Data Comparison
+"""
+
+    # 3️⃣ TEMPLATE CONTEXT
     template_block = ""
     for t in templates:
         template_block += f"""
 ETL TEMPLATE:
-Type: {t.get('FeatureKeyword')}
+Validation Type: {t.get('FeatureKeyword')}
 Description: {t.get('TestCaseTitle')}
 Steps: {t.get('Steps')}
-Expected: {t.get('ExpectedResult')}
+Expected Result: {t.get('ExpectedResult')}
 ---
 """
 
+    # 4️⃣ FINAL PROMPT (ETL FIRST, JIRA SECOND)
     return f"""
-YOU ARE A SENIOR ETL / DATA QUALITY TEST ENGINEER.
+{etl_authority}
 
-STRICT RULES:
-- DO NOT generate UI, login, security, or browser tests
-- ONLY generate ETL / DATA VALIDATION test cases
+{etl_test_taxonomy}
 
-ALLOWED TEST TYPES:
-- Count Check
-- Source to Target Reconciliation
-- Aggregation Check (SUM, AVG, MIN, MAX)
-- Distinct / Duplicate Check
-- Null / Mandatory Check
-- Range / Threshold Check
-- Data Type Validation
+PREDEFINED ETL TEST PATTERNS:
+{template_block}
 
-REQUIREMENTS:
+JIRA REQUIREMENTS (DATA CONTEXT ONLY):
 {jira_description}
 
 KEYWORDS:
 {", ".join(keywords)}
 
-PREDEFINED ETL TEMPLATES:
-{template_block}
+GENERATION RULES:
+- Generate ONLY ETL / Data Quality test cases
+- Use Jira text only to identify tables, files, columns, and rules
+- Each test case MUST mention:
+  • Source and target
+  • Columns involved
+  • Validation logic
+  • Expected data result
 
-Generate test cases based on complexity:
-- Simple ETL → 6–8 tests
-- Medium ETL → 10–15 tests
-- Complex ETL → 15–25 tests
+TEST COUNT GUIDANCE:
+- Simple ETL → 6–8 test cases
+- Medium ETL → 10–15 test cases
+- Complex ETL → 15–25 test cases
 
-OUTPUT FORMAT (Python list or JSON):
+OUTPUT FORMAT:
+Return ONLY a Python list of dictionaries OR a valid JSON list.
+
+EXAMPLE:
 [
   {{
     "id": "TC-001",
-    "title": "Count check between source and target",
-    "preconditions": "Source and target tables are loaded",
+    "title": "Record count validation between source and target",
+    "preconditions": "Source and target datasets are available",
     "steps": [
       {{
         "action": "Compare record count between SRC_TABLE and TGT_TABLE",
-        "expected": "Counts must match"
+        "expected": "Record counts must match exactly"
       }}
     ],
     "priority": "High",
     "type": "ETL",
-    "expected_result": "Data validation successful"
+    "expected_result": "Data consistency validated"
   }}
 ]
 
