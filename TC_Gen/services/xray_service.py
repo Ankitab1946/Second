@@ -119,23 +119,26 @@ from requests.auth import HTTPBasicAuth
 
 class XrayService:
     """
-    Xray integration service supporting:
-    - Xray Test creation
-    - Test Step creation (PUT + POST fallback)
-    - Test Set creation
-    - Linking Test Set -> Story (Tested By)
-    - Adding Tests -> Test Set
+    Production-safe Xray integration.
 
-    Compatible with:
-    - Jira Cloud + Xray Cloud
-    - Jira Data Center + Xray DC
+    Supports:
+    - Create Xray Test
+    - Add Test Steps (ALL Xray variants)
+    - Create Test Set
+    - Link Test Set -> Story (Tested By)
+    - Add Tests -> Test Set
+
+    Handles:
+    - Xray Cloud (new / old)
+    - Xray Data Center
+    - PUT /steps, PUT /step, POST /step differences
     """
 
     def __init__(self, jira, project_key):
         self.jira = jira
         self.project_key = project_key
 
-        # Normalize base URL (prevents //rest/... bugs)
+        # Normalize base URL to avoid //rest errors
         self.base_url = jira.base_url.rstrip("/")
 
         self.auth = HTTPBasicAuth(jira.username, jira.password)
@@ -144,9 +147,9 @@ class XrayService:
             "Accept": "application/json"
         }
 
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     # Create Xray Test
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     def create_xray_test(self, title, preconditions):
         payload = {
             "fields": {
@@ -168,45 +171,82 @@ class XrayService:
         r.raise_for_status()
         return r.json()["key"]
 
-    # ---------------------------------------------------
-    # Add Test Steps (PUT primary, POST fallback)
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
+    # Add Test Steps (UNIVERSAL IMPLEMENTATION)
+    # ---------------------------------------------------------
     def add_test_steps(self, test_key, steps):
         """
         Adds steps to an Xray Test.
-        Uses PUT first (required by many Xray versions),
-        falls back to POST if needed.
+
+        Tries in this order:
+        1) PUT  /steps   (Xray Cloud – bulk replace, most common)
+        2) PUT  /step    (Xray Data Center)
+        3) POST /step    (Legacy Xray Cloud)
+
+        This covers ALL known Xray versions.
         """
 
         if not steps:
             return
 
-        url = f"{self.base_url}/rest/raven/1.0/api/test/{test_key}/step"
-
-        for s in steps:
-            payload = {
-                "step": {
-                    "action": s.get("action", ""),
-                    "data": "",
-                    "result": s.get("expected", "")
-                }
+        normalized_steps = [
+            {
+                "action": s.get("action", ""),
+                "data": "",
+                "result": s.get("expected", "")
             }
+            for s in steps
+        ]
 
-            # ---- TRY PUT (preferred) ----
+        # =====================================================
+        # 1️⃣ TRY PUT /steps (Bulk replace – Cloud)
+        # =====================================================
+        bulk_url = f"{self.base_url}/rest/raven/1.0/api/test/{test_key}/steps"
+        bulk_payload = {"steps": normalized_steps}
+
+        r = requests.put(
+            bulk_url,
+            json=bulk_payload,
+            auth=self.auth,
+            headers=self.headers,
+            verify=False
+        )
+
+        if r.status_code in (200, 201, 204):
+            return  # SUCCESS
+
+        # =====================================================
+        # 2️⃣ TRY PUT /step (DC)
+        # =====================================================
+        step_url = f"{self.base_url}/rest/raven/1.0/api/test/{test_key}/step"
+
+        put_success = True
+        for step in normalized_steps:
+            payload = {"step": step}
+
             r = requests.put(
-                url,
+                step_url,
                 json=payload,
                 auth=self.auth,
                 headers=self.headers,
                 verify=False
             )
 
-            if r.status_code in (200, 201, 204):
-                continue
+            if r.status_code not in (200, 201, 204):
+                put_success = False
+                break
 
-            # ---- FALLBACK TO POST ----
+        if put_success:
+            return  # SUCCESS
+
+        # =====================================================
+        # 3️⃣ FALLBACK POST /step (Legacy Cloud)
+        # =====================================================
+        for step in normalized_steps:
+            payload = {"step": step}
+
             r = requests.post(
-                url,
+                step_url,
                 json=payload,
                 auth=self.auth,
                 headers=self.headers,
@@ -215,13 +255,13 @@ class XrayService:
 
             if r.status_code not in (200, 201, 204):
                 raise RuntimeError(
-                    f"Failed to add step to {test_key}. "
+                    f"Failed to add steps to {test_key}. "
                     f"Status: {r.status_code}, Response: {r.text}"
                 )
 
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     # Create Test Set
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     def create_testset(self, name):
         payload = {
             "fields": {
@@ -242,10 +282,12 @@ class XrayService:
         r.raise_for_status()
         return r.json()["key"]
 
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     # Link Test Set -> Story
-    # (Shows as "Tested By" in Story, "Tests" in Test Set)
-    # ---------------------------------------------------
+    # Appears as:
+    # Story  -> Tested By -> Test Set
+    # TestSet -> Tests    -> Story
+    # ---------------------------------------------------------
     def link_testset_to_story(self, testset_key, story_key):
         payload = {
             "type": {"name": "Tests"},
@@ -263,16 +305,14 @@ class XrayService:
 
         r.raise_for_status()
 
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     # Add Tests -> Test Set
-    # ---------------------------------------------------
+    # ---------------------------------------------------------
     def add_tests_to_testset(self, testset_key, test_keys):
         if not test_keys:
             return
 
-        payload = {
-            "add": test_keys
-        }
+        payload = {"add": test_keys}
 
         r = requests.post(
             f"{self.base_url}/rest/raven/1.0/api/testset/{testset_key}/test",
