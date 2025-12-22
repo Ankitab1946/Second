@@ -50,19 +50,33 @@ def filter_templates_by_keywords(templates, keywords, jira_text):
     return results
 
 
-def build_prompt(summary, jira_description, keywords, templates):
+def build_prompt(summary, jira_description, keywords, templates, test_type):
     template_block = ""
     for t in templates:
         template_block += f"""
-TEMPLATE:
-Title: {t.get('TestCaseTitle')}
+ETL TEMPLATE:
+Type: {t.get('FeatureKeyword')}
+Description: {t.get('TestCaseTitle')}
 Steps: {t.get('Steps')}
 Expected: {t.get('ExpectedResult')}
 ---
 """
 
     return f"""
-You are a senior QA engineer.
+YOU ARE A SENIOR ETL / DATA QUALITY TEST ENGINEER.
+
+STRICT RULES:
+- DO NOT generate UI, login, security, or browser tests
+- ONLY generate ETL / DATA VALIDATION test cases
+
+ALLOWED TEST TYPES:
+- Count Check
+- Source to Target Reconciliation
+- Aggregation Check (SUM, AVG, MIN, MAX)
+- Distinct / Duplicate Check
+- Null / Mandatory Check
+- Range / Threshold Check
+- Data Type Validation
 
 REQUIREMENTS:
 {jira_description}
@@ -70,38 +84,66 @@ REQUIREMENTS:
 KEYWORDS:
 {", ".join(keywords)}
 
-PREDEFINED TEMPLATES:
+PREDEFINED ETL TEMPLATES:
 {template_block}
 
 Generate test cases based on complexity:
-- Simple: 5–8
-- Medium: 8–15
-- Complex: 15–25
+- Simple ETL → 6–8 tests
+- Medium ETL → 10–15 tests
+- Complex ETL → 15–25 tests
 
-Return a list of test cases in JSON or Python list format.
+OUTPUT FORMAT (Python list or JSON):
+[
+  {{
+    "id": "TC-001",
+    "title": "Count check between source and target",
+    "preconditions": "Source and target tables are loaded",
+    "steps": [
+      {{
+        "action": "Compare record count between SRC_TABLE and TGT_TABLE",
+        "expected": "Counts must match"
+      }}
+    ],
+    "priority": "High",
+    "type": "ETL",
+    "expected_result": "Data validation successful"
+  }}
+]
+
+RETURN ONLY THE LIST.
 """
 
 
 def validate_testcases(data):
+    if not isinstance(data, list):
+        raise ValueError("AI output is not a list")
+
     cleaned = []
 
     for i, tc in enumerate(data, start=1):
+        if not isinstance(tc, dict):
+            continue
+
         steps = []
         for s in tc.get("steps", []):
-            steps.append({
-                "action": s.get("action") or s.get("actions", ""),
-                "expected": s.get("expected") or s.get("Expected", "")
-            })
+            if isinstance(s, dict):
+                steps.append({
+                    "action": s.get("action") or s.get("actions", ""),
+                    "expected": s.get("expected") or s.get("Expected", "")
+                })
 
         cleaned.append({
             "id": tc.get("id", f"TC-{i:03d}"),
-            "title": tc.get("title", "").strip(),
+            "title": tc.get("title", f"ETL Test Case {i}"),
             "preconditions": clean_text(tc.get("preconditions", "")),
             "steps": steps,
-            "priority": tc.get("priority", "Medium"),
-            "type": tc.get("type", "Functional"),
+            "priority": tc.get("priority", "High"),
+            "type": "ETL",
             "expected_result": tc.get("expected_result", "")
         })
+
+    if not cleaned:
+        raise ValueError("No valid ETL test cases generated")
 
     return cleaned
 
@@ -116,4 +158,3 @@ def export_to_excel(testcases):
 
 def export_to_json(testcases):
     return json.dumps(testcases, indent=2)
-
