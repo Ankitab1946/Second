@@ -2,7 +2,6 @@ import streamlit as st
 
 from services.bedrock_service import BedrockService
 from services.jira_service import JiraService
-from services.xray_service import XrayService
 from services.utils import (
     load_predefined_templates,
     filter_templates_by_keywords,
@@ -17,11 +16,11 @@ from services.utils import (
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(
-    page_title="AI Test Case Generator (Jira + Xray + Bedrock)",
+    page_title="AI ETL Test Case Generator",
     layout="wide"
 )
 
-st.title("🧪 AI Test Case Generator – Jira + Xray + AWS Bedrock")
+st.title("🧪 AI ETL / Data Quality Test Case Generator")
 
 # ============================================================
 # SESSION STATE DEFAULTS
@@ -45,55 +44,45 @@ for k, v in defaults.items():
 # ============================================================
 st.sidebar.header("🔐 Jira Configuration")
 
-jira_type = st.sidebar.radio("Jira Type", ["Cloud", "Data Center"])
 jira_base = st.sidebar.text_input("Jira Base URL")
 jira_user = st.sidebar.text_input("Username / Email")
 jira_pass = st.sidebar.text_input("API Token / Password", type="password")
-project_key = st.sidebar.text_input("Project Key", placeholder="PRJ")
 
 if st.sidebar.button("Connect to Jira"):
     try:
         st.session_state["jira_service"] = JiraService(
             base_url=jira_base,
             username=jira_user,
-            password=jira_pass,
-            jira_type=jira_type.lower()
+            password=jira_pass
         )
         st.session_state["connected"] = True
         st.sidebar.success("Connected to Jira")
     except Exception as e:
         st.sidebar.error(f"Connection failed: {e}")
 
-# ============================================================
-# BEDROCK SERVICE
-# ============================================================
 bedrock = BedrockService()
-
-# ============================================================
-# STORY SELECTION
-# ============================================================
-st.sidebar.header("📌 Story Selection")
-story_mode = st.sidebar.radio("Select Method", ["Enter Story Key", "Search Story"])
-
 jira = st.session_state["jira_service"]
 
+# ============================================================
+# STORY FETCH
+# ============================================================
+st.sidebar.header("📌 Story Selection")
+
 if st.session_state["connected"] and jira:
+    story_key = st.sidebar.text_input("Enter Story Key (e.g. PRJ-2093)")
 
-    if story_mode == "Enter Story Key":
-        manual_key = st.sidebar.text_input("Enter Story Key", placeholder="PRJ-2093")
+    if st.sidebar.button("Fetch Story"):
+        issue = jira.get_issue(story_key)
 
-        if st.sidebar.button("Fetch Story"):
-            issue = jira.get_issue(manual_key)
+        st.session_state["story_key"] = story_key
+        st.session_state["story"] = issue
 
-            st.session_state["story_key"] = manual_key
-            st.session_state["story"] = issue
+        # 🔥 CLEAR OLD DATA
+        st.session_state["testcases"] = None
+        st.session_state["last_prompt"] = None
+        st.session_state["last_story_key"] = story_key
 
-            # 🔥 Clear old data
-            st.session_state["testcases"] = None
-            st.session_state["last_prompt"] = None
-            st.session_state["last_story_key"] = manual_key
-
-            st.success(f"Story {manual_key} loaded")
+        st.success(f"Story {story_key} loaded")
 
 # ============================================================
 # DISPLAY STORY
@@ -109,19 +98,25 @@ if st.session_state["story"]:
     st.write(story["fields"].get("description", ""))
 
 # ============================================================
-# GENERATE TEST CASES
+# GENERATE ETL TEST CASES
 # ============================================================
-st.header("🧠 Generate Test Cases")
+st.header("🧠 Generate ETL / Data Quality Test Cases")
 
 if st.session_state["story"]:
+
+    test_type = st.selectbox(
+        "Test Type",
+        ["ETL / Data Quality Testing"]
+    )
+
     uploaded_templates = st.file_uploader(
-        "Upload Predefined Test Case Templates (CSV / Excel)",
+        "Upload ETL Test Templates (CSV / Excel)",
         type=["csv", "xlsx"]
     )
 
     keywords_input = st.text_input(
-        "Keywords (comma separated)",
-        placeholder="count check, reconciliation"
+        "ETL Keywords (comma separated)",
+        placeholder="count, reconciliation, aggregation, distinct, null"
     )
 
     if st.button("Generate Test Cases"):
@@ -131,7 +126,7 @@ if st.session_state["story"]:
         summary = clean_text(story["fields"]["summary"])
         description = clean_text(story["fields"].get("description", ""))
 
-        # Acceptance Criteria (example custom field)
+        # Acceptance Criteria
         acceptance_criteria = clean_text(
             story["fields"].get("customfield_15900", "")
         )
@@ -144,7 +139,7 @@ if st.session_state["story"]:
         except Exception:
             pass
 
-        full_requirement_text = f"""
+        full_req = f"""
 SUMMARY:
 {summary}
 
@@ -164,22 +159,21 @@ COMMENTS:
         templates_filtered = filter_templates_by_keywords(
             templates,
             keywords,
-            full_requirement_text
+            full_req
         )
 
         prompt = build_prompt(
-            summary=summary,
-            jira_description=full_requirement_text,
-            keywords=keywords,
-            templates=templates_filtered
+            summary,
+            full_req,
+            keywords,
+            templates_filtered,
+            test_type
         )
 
-        should_regenerate = (
+        if (
             st.session_state["last_prompt"] != prompt or
             st.session_state["last_story_key"] != st.session_state["story_key"]
-        )
-
-        if should_regenerate:
+        ):
             raw = bedrock.generate_testcases(prompt)
             testcases = validate_testcases(raw)
 
@@ -187,15 +181,13 @@ COMMENTS:
             st.session_state["last_prompt"] = prompt
             st.session_state["last_story_key"] = st.session_state["story_key"]
 
-            st.success(f"Generated {len(testcases)} test cases")
-        else:
-            st.info("Test cases already generated for this story")
+            st.success(f"Generated {len(testcases)} ETL test cases")
 
 # ============================================================
-# DISPLAY GENERATED TEST CASES
+# DISPLAY RESULTS
 # ============================================================
 if st.session_state["testcases"]:
-    st.header("📝 Generated Test Cases")
+    st.header("📋 Generated ETL Test Cases")
 
     for tc in st.session_state["testcases"]:
         with st.expander(tc["title"]):
@@ -204,11 +196,11 @@ if st.session_state["testcases"]:
     st.download_button(
         "⬇️ Download Excel",
         export_to_excel(st.session_state["testcases"]),
-        file_name="testcases.xlsx"
+        file_name="etl_testcases.xlsx"
     )
 
     st.download_button(
         "⬇️ Download JSON",
         export_to_json(st.session_state["testcases"]),
-        file_name="testcases.json"
+        file_name="etl_testcases.json"
     )
