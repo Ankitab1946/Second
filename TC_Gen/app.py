@@ -1,3 +1,4 @@
+
 # import streamlit as st
 
 # from services.bedrock_service import BedrockService
@@ -73,20 +74,23 @@
 # st.sidebar.header("📌 Story Selection")
 
 # if st.session_state["connected"] and jira:
-#     story_key = st.sidebar.text_input("Enter Story Key (e.g. PRJ-2093)")
+#     story_key = st.sidebar.text_input("Enter Story Key (e.g. PRJ-2094)")
 
 #     if st.sidebar.button("Fetch Story"):
-#         issue = jira.get_issue(story_key)
+#         try:
+#             issue = jira.get_issue(story_key)
 
-#         st.session_state["story_key"] = story_key
-#         st.session_state["story"] = issue
+#             st.session_state["story_key"] = story_key
+#             st.session_state["story"] = issue
 
-#         # 🔥 Reset previous generation
-#         st.session_state["testcases"] = None
-#         st.session_state["last_prompt"] = None
-#         st.session_state["last_story_key"] = story_key
+#             # Reset previous generation
+#             st.session_state["testcases"] = None
+#             st.session_state["last_prompt"] = None
+#             st.session_state["last_story_key"] = story_key
 
-#         st.success(f"Story {story_key} loaded")
+#             st.success(f"Story {story_key} loaded")
+#         except Exception as e:
+#             st.error(f"Failed to fetch story: {e}")
 
 # # ============================================================
 # # DISPLAY STORY
@@ -95,6 +99,7 @@
 #     story = st.session_state["story"]
 
 #     st.subheader(f"📖 Story: {st.session_state['story_key']}")
+
 #     st.write("### Summary")
 #     st.write(story["fields"]["summary"])
 
@@ -125,12 +130,10 @@
 #         summary = clean_text(story["fields"]["summary"])
 #         description = clean_text(story["fields"].get("description", ""))
 
-#         # Acceptance Criteria (optional custom field)
 #         acceptance_criteria = clean_text(
 #             story["fields"].get("customfield_15900", "")
 #         )
 
-#         # Jira comments
 #         comments_text = ""
 #         try:
 #             comments = story["fields"]["comment"]["comments"]
@@ -161,7 +164,6 @@
 #             full_req
 #         )
 
-#         # 🔒 ETL MODE IS MANDATORY
 #         test_type = "ETL_DQ_ONLY"
 
 #         prompt = build_prompt(
@@ -199,12 +201,14 @@
 #             st.json(tc)
 
 #     col1, col2 = st.columns(2)
+
 #     with col1:
 #         st.download_button(
 #             "⬇️ Download Excel",
 #             export_to_excel(st.session_state["testcases"]),
 #             file_name="etl_testcases.xlsx"
 #         )
+
 #     with col2:
 #         st.download_button(
 #             "⬇️ Download JSON",
@@ -213,7 +217,7 @@
 #         )
 
 # # ============================================================
-# # 🚀 PUSH TO XRAY
+# # 🚀 PUSH TO XRAY (FINAL CORRECT STRUCTURE)
 # # ============================================================
 # st.header("🚀 Push ETL Test Cases to Jira Xray")
 
@@ -236,11 +240,20 @@
 
 #     if st.button("Push Test Cases to Xray"):
 #         try:
+#             # 1️⃣ Create Test Set
 #             with st.spinner("Creating Xray Test Set..."):
 #                 testset_key = xray.create_testset(testset_name)
 
+#             # 2️⃣ Link Test Set → Story (Tested By)
+#             with st.spinner("Linking Test Set to Story..."):
+#                 xray.link_testset_to_story(
+#                     testset_key,
+#                     st.session_state["story_key"]
+#                 )
+
 #             created_tests = []
 
+#             # 3️⃣ Create Tests + Steps (NO Story link)
 #             with st.spinner("Creating Xray Tests and adding steps..."):
 #                 for tc in st.session_state["testcases"]:
 #                     test_key = xray.create_xray_test(
@@ -249,19 +262,15 @@
 #                     )
 
 #                     xray.add_test_steps(test_key, tc["steps"])
-#                     xray.link_test_to_story(
-#                         test_key,
-#                         st.session_state["story_key"]
-#                     )
-
 #                     created_tests.append(test_key)
 
+#             # 4️⃣ Add Tests → Test Set
 #             with st.spinner("Adding Tests to Test Set..."):
 #                 xray.add_tests_to_testset(testset_key, created_tests)
 
 #             st.success(
-#                 f"✅ Successfully pushed {len(created_tests)} ETL tests "
-#                 f"to Xray Test Set {testset_key}"
+#                 f"✅ Story {st.session_state['story_key']} is TESTED BY "
+#                 f"Test Set {testset_key} containing {len(created_tests)} ETL tests"
 #             )
 
 #         except Exception as e:
@@ -302,6 +311,7 @@ defaults = {
     "story_key": None,
     "story": None,
     "testcases": None,
+    "selected_for_xray": [],
     "last_prompt": None,
     "last_story_key": None
 }
@@ -343,7 +353,7 @@ jira = st.session_state["jira_service"]
 st.sidebar.header("📌 Story Selection")
 
 if st.session_state["connected"] and jira:
-    story_key = st.sidebar.text_input("Enter Story Key (e.g. PRJ-2094)")
+    story_key = st.sidebar.text_input("Enter Story Key (e.g. PRJ-2097)")
 
     if st.sidebar.button("Fetch Story"):
         try:
@@ -352,8 +362,9 @@ if st.session_state["connected"] and jira:
             st.session_state["story_key"] = story_key
             st.session_state["story"] = issue
 
-            # Reset previous generation
+            # Reset previous state
             st.session_state["testcases"] = None
+            st.session_state["selected_for_xray"] = []
             st.session_state["last_prompt"] = None
             st.session_state["last_story_key"] = story_key
 
@@ -443,54 +454,85 @@ COMMENTS:
             test_type
         )
 
-        should_regenerate = (
+        if (
             st.session_state["last_prompt"] != prompt or
             st.session_state["last_story_key"] != st.session_state["story_key"]
-        )
-
-        if should_regenerate:
+        ):
             with st.spinner("Generating ETL test cases..."):
                 raw = bedrock.generate_testcases(prompt)
                 testcases = validate_testcases(raw)
 
             st.session_state["testcases"] = testcases
+            st.session_state["selected_for_xray"] = testcases[:]  # default select all
             st.session_state["last_prompt"] = prompt
             st.session_state["last_story_key"] = st.session_state["story_key"]
 
             st.success(f"Generated {len(testcases)} ETL test cases")
 
 # ============================================================
-# DISPLAY GENERATED TEST CASES
+# DISPLAY & SELECT TEST CASES
 # ============================================================
 if st.session_state["testcases"]:
     st.header("📋 Generated ETL Test Cases")
 
+    # Selection map
+    if "selection_map" not in st.session_state:
+        st.session_state["selection_map"] = {
+            tc["id"]: True for tc in st.session_state["testcases"]
+        }
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("✅ Select All"):
+            for k in st.session_state["selection_map"]:
+                st.session_state["selection_map"][k] = True
+
+    with col_b:
+        if st.button("❌ Deselect All"):
+            for k in st.session_state["selection_map"]:
+                st.session_state["selection_map"][k] = False
+
     for tc in st.session_state["testcases"]:
-        with st.expander(tc["title"]):
+        checked = st.checkbox(
+            f"{tc['id']} — {tc['title']}",
+            value=st.session_state["selection_map"].get(tc["id"], True),
+            key=f"chk_{tc['id']}"
+        )
+
+        st.session_state["selection_map"][tc["id"]] = checked
+
+        with st.expander("View details"):
             st.json(tc)
 
-    col1, col2 = st.columns(2)
+    selected = [
+        tc for tc in st.session_state["testcases"]
+        if st.session_state["selection_map"].get(tc["id"])
+    ]
 
+    st.session_state["selected_for_xray"] = selected
+    st.info(f"Selected {len(selected)} of {len(st.session_state['testcases'])} test cases")
+
+    col1, col2 = st.columns(2)
     with col1:
         st.download_button(
-            "⬇️ Download Excel",
-            export_to_excel(st.session_state["testcases"]),
-            file_name="etl_testcases.xlsx"
+            "⬇️ Download Selected (Excel)",
+            export_to_excel(selected),
+            file_name="etl_testcases_selected.xlsx"
         )
 
     with col2:
         st.download_button(
-            "⬇️ Download JSON",
-            export_to_json(st.session_state["testcases"]),
-            file_name="etl_testcases.json"
+            "⬇️ Download Selected (JSON)",
+            export_to_json(selected),
+            file_name="etl_testcases_selected.json"
         )
 
 # ============================================================
-# 🚀 PUSH TO XRAY (FINAL CORRECT STRUCTURE)
+# 🚀 PUSH TO XRAY
 # ============================================================
 st.header("🚀 Push ETL Test Cases to Jira Xray")
 
-if st.session_state["testcases"] and st.session_state["connected"]:
+if st.session_state["connected"] and st.session_state["selected_for_xray"]:
 
     project_key = st.text_input(
         "Jira Project Key (for Xray)",
@@ -507,13 +549,16 @@ if st.session_state["testcases"] and st.session_state["connected"]:
         value=f"{st.session_state['story_key']}-ETL-TestSet"
     )
 
-    if st.button("Push Test Cases to Xray"):
+    if st.button("Push Selected Test Cases to Xray"):
+
+        if not st.session_state["selected_for_xray"]:
+            st.error("Please select at least one test case.")
+            st.stop()
+
         try:
-            # 1️⃣ Create Test Set
-            with st.spinner("Creating Xray Test Set..."):
+            with st.spinner("Creating Test Set..."):
                 testset_key = xray.create_testset(testset_name)
 
-            # 2️⃣ Link Test Set → Story (Tested By)
             with st.spinner("Linking Test Set to Story..."):
                 xray.link_testset_to_story(
                     testset_key,
@@ -522,24 +567,21 @@ if st.session_state["testcases"] and st.session_state["connected"]:
 
             created_tests = []
 
-            # 3️⃣ Create Tests + Steps (NO Story link)
-            with st.spinner("Creating Xray Tests and adding steps..."):
-                for tc in st.session_state["testcases"]:
+            with st.spinner("Creating Xray Tests..."):
+                for tc in st.session_state["selected_for_xray"]:
                     test_key = xray.create_xray_test(
                         title=tc["title"],
                         preconditions=tc.get("preconditions", "")
                     )
-
                     xray.add_test_steps(test_key, tc["steps"])
                     created_tests.append(test_key)
 
-            # 4️⃣ Add Tests → Test Set
             with st.spinner("Adding Tests to Test Set..."):
                 xray.add_tests_to_testset(testset_key, created_tests)
 
             st.success(
-                f"✅ Story {st.session_state['story_key']} is TESTED BY "
-                f"Test Set {testset_key} containing {len(created_tests)} ETL tests"
+                f"✅ Uploaded {len(created_tests)} selected ETL tests "
+                f"to Test Set {testset_key}"
             )
 
         except Exception as e:
