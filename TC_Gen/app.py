@@ -6,7 +6,7 @@ from services.xray_service import XrayService
 from services.utils import (
     load_predefined_templates,
     filter_templates_by_keywords,
-@@ -60,6 +268,9 @@
+
     except Exception as e:
         st.sidebar.error(f"Connection failed: {e}")
 
@@ -16,7 +16,8 @@ from services.utils import (
 bedrock = BedrockService()
 jira = st.session_state["jira_service"]
 
-@@ -77,7 +288,7 @@
+
+
         st.session_state["story_key"] = story_key
         st.session_state["story"] = issue
 
@@ -25,7 +26,7 @@ jira = st.session_state["jira_service"]
         st.session_state["testcases"] = None
         st.session_state["last_prompt"] = None
         st.session_state["last_story_key"] = story_key
-@@ -98,7 +309,7 @@
+
     st.write(story["fields"].get("description", ""))
 
 # ============================================================
@@ -34,7 +35,7 @@ jira = st.session_state["jira_service"]
 # ============================================================
 st.header("🧠 Generate ETL / Data Quality Test Cases")
 
-@@ -157,7 +368,7 @@
+
             full_req
         )
 
@@ -43,7 +44,7 @@ st.header("🧠 Generate ETL / Data Quality Test Cases")
         test_type = "ETL_DQ_ONLY"
 
         prompt = build_prompt(
-@@ -174,8 +385,9 @@
+
         )
 
         if should_regenerate:
@@ -55,7 +56,7 @@ st.header("🧠 Generate ETL / Data Quality Test Cases")
 
             st.session_state["testcases"] = testcases
             st.session_state["last_prompt"] = prompt
-@@ -184,7 +396,7 @@
+
             st.success(f"Generated {len(testcases)} ETL test cases")
 
 # ============================================================
@@ -64,7 +65,7 @@ st.header("🧠 Generate ETL / Data Quality Test Cases")
 # ============================================================
 if st.session_state["testcases"]:
     st.header("📋 Generated ETL Test Cases")
-@@ -193,14 +405,71 @@
+
         with st.expander(tc["title"]):
             st.json(tc)
 
@@ -143,4 +144,4 @@ if st.session_state["testcases"] and st.session_state["connected"]:
             )
 
         except Exception as e:
-            st.error(f"❌ Xray push failed: {e}")
+            st.error(f"❌ Xray push failed: {e}")    
