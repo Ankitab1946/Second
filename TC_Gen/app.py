@@ -16,7 +16,7 @@ from services.utils import (
 # PAGE CONFIG
 # ============================================================
 st.set_page_config(
-    page_title="AI ETL Test Case Generator",
+    page_title="AI ETL / Data Quality Test Case Generator",
     layout="wide"
 )
 
@@ -77,7 +77,7 @@ if st.session_state["connected"] and jira:
         st.session_state["story_key"] = story_key
         st.session_state["story"] = issue
 
-        # 🔥 CLEAR OLD DATA
+        # 🔥 Clear old data
         st.session_state["testcases"] = None
         st.session_state["last_prompt"] = None
         st.session_state["last_story_key"] = story_key
@@ -98,16 +98,11 @@ if st.session_state["story"]:
     st.write(story["fields"].get("description", ""))
 
 # ============================================================
-# GENERATE ETL TEST CASES
+# GENERATE ETL TEST CASES (MANDATORY ETL MODE)
 # ============================================================
 st.header("🧠 Generate ETL / Data Quality Test Cases")
 
 if st.session_state["story"]:
-
-    test_type = st.selectbox(
-        "Test Type",
-        ["ETL / Data Quality Testing"]
-    )
 
     uploaded_templates = st.file_uploader(
         "Upload ETL Test Templates (CSV / Excel)",
@@ -126,16 +121,16 @@ if st.session_state["story"]:
         summary = clean_text(story["fields"]["summary"])
         description = clean_text(story["fields"].get("description", ""))
 
-        # Acceptance Criteria
+        # Acceptance Criteria (optional custom field)
         acceptance_criteria = clean_text(
             story["fields"].get("customfield_15900", "")
         )
 
-        # Comments
+        # Jira comments
         comments_text = ""
         try:
             comments = story["fields"]["comment"]["comments"]
-            comments_text = " ".join([clean_text(c["body"]) for c in comments])
+            comments_text = " ".join(clean_text(c["body"]) for c in comments)
         except Exception:
             pass
 
@@ -162,6 +157,9 @@ COMMENTS:
             full_req
         )
 
+        # 🔒 ETL MODE IS HARD-CODED
+        test_type = "ETL_DQ_ONLY"
+
         prompt = build_prompt(
             summary,
             full_req,
@@ -170,10 +168,12 @@ COMMENTS:
             test_type
         )
 
-        if (
+        should_regenerate = (
             st.session_state["last_prompt"] != prompt or
             st.session_state["last_story_key"] != st.session_state["story_key"]
-        ):
+        )
+
+        if should_regenerate:
             raw = bedrock.generate_testcases(prompt)
             testcases = validate_testcases(raw)
 
