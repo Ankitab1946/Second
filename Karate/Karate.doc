@@ -110,6 +110,11 @@ pom.xml
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
+                    <useFile>false</useFile>
+                    <systemPropertyVariables>
+                        <karate.output.pretty>true</karate.output.pretty>
+                        <karate.report.dir>target/karate-reports</karate.report.dir>
+                    </systemPropertyVariables>
                     <includes>
                         <include>**/*Runner.java</include>
                     </includes>
