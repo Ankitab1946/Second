@@ -1,0 +1,118 @@
+karate-httpbin-python/
+│
+├── run_karate.py          # Python runner
+├── requirements.txt
+│
+├── pom.xml                # Karate still needs Maven
+│
+└── src
+    └── test
+        └── resources
+            ├── karate-config.js
+            │
+            └── features
+                └── httpbin
+                    └── anything.feature
+
+
+
+
+src/test/resources/features/httpbin/anything.feature
+
+Feature: httpbin anything endpoint
+
+  Background:
+    * url 'https://httpbin.org'
+    * header Content-Type = 'application/json'
+
+  Scenario: GET request
+    Given path 'anything'
+    When method GET
+    Then status 200
+
+  Scenario: POST request
+    Given path 'anything'
+    And request { name: 'Karate', lang: 'Python runner' }
+    When method POST
+    Then status 200
+    And match response.json.name == 'Karate'
+
+
+run_karate.py
+import subprocess
+import sys
+
+def run_karate():
+    try:
+        result = subprocess.run(
+            ["mvn", "test"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        print(result.stdout)
+
+        if result.returncode != 0:
+            print("❌ Karate tests failed")
+            print(result.stderr)
+            sys.exit(1)
+
+        print("✅ Karate tests passed")
+
+    except FileNotFoundError:
+        print("❌ Maven not found. Please install Maven.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    run_karate()
+
+
+pom.xml
+
+<configuration>
+    <systemPropertyVariables>
+        <karate.output.pretty>true</karate.output.pretty>
+        <karate.report.dir>target/karate</karate.report.dir>
+    </systemPropertyVariables>
+</configuration>
+
+
+To run python run_karate.py
+
+
+function fn() {
+
+  var env = karate.env; // mvn test -Dkarate.env=qa
+  if (!env) {
+    env = 'dev';
+  }
+
+  karate.log('Karate environment:', env);
+
+  var config = {
+    env: env,
+    baseUrl: ''
+  };
+
+  if (env === 'dev') {
+    config.baseUrl = 'https://httpbin.org';
+  } else if (env === 'qa') {
+    config.baseUrl = 'https://httpbin.org';
+  } else if (env === 'prod') {
+    config.baseUrl = 'https://httpbin.org';
+  }
+
+  // Global headers
+  config.headers = {
+    'Content-Type': 'application/json'
+  };
+
+  // Timeout config
+  karate.configure('connectTimeout', 5000);
+  karate.configure('readTimeout', 5000);
+
+  return config;
+}
+
+  python run_karate.py -Dkarate.env=qa
