@@ -42,10 +42,15 @@ run_karate.py
 import subprocess
 import sys
 
+MAVEN_CMD = r'"C:\Tools\apache-maven-3.9.11\bin\mvn.cmd"'
+
 def run_karate():
     try:
+        command = f'{MAVEN_CMD} test'
+
         result = subprocess.run(
-            ["mvn", "test"],
+            command,
+            shell=True,              # 🔴 REQUIRED ON WINDOWS
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -60,8 +65,8 @@ def run_karate():
 
         print("✅ Karate tests passed")
 
-    except FileNotFoundError:
-        print("❌ Maven not found. Please install Maven.")
+    except Exception as e:
+        print("❌ Error running Maven:", e)
         sys.exit(1)
 
 if __name__ == "__main__":
