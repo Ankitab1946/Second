@@ -1,0 +1,39 @@
+I have an UI which shows financials for the selected client. Wanted to Automate scenario where user search for a Client from the predefined list of clients in excel/csv format and validate its financials for each client. 
+
+What I have :
+1)	Three Types of mapping
+a.	List of companies.xlsx in excel Tab :”company_ID”
+b.	List of SDSID and ClientID mapping in excel Mapping1.xlsx, Following is the mapping :
+i.	Partyid column of this excel sheet Mapping1.xlsx = company_ID column of companies.xls(tabname=Mapping_sept)
+ii.	capitalID = sdsid
+c.	Data Dictionary for all the financial attribute mapping with following details :
+i.	Display Sequency : based on this sequence attribute should appear in UI
+ii.	Proj ID
+iii.	Proj Attribute name
+iv.	Section
+v.	Subsection
+vi.	Maping Type
+vii.	Calculated (Y/N)
+viii.	Editable in Historicals(y/n) 
+ix.	Calculations
+2)	SQL Server Data Base connections 
+I have a mapping of each attribute mapping.xlsx and SQL Server DB tables. 
+Scenario 1 : 
+1)	Open UI in Chrome Browser
+2)	Select  company_ID(s) one by one client from companies.xlsx
+3)	Search its Partyid in Mapping1.xlsx and pick its adjecnet capitalID as SDSID
+4)	Search for the  company_ID in UI 
+5)	Select searched client
+6)	Navigate to Financials Highlights tab
+7)	Here in page there are filters and populated fields.
+8)	Selected Filleters as 
+a.	Currency : USD
+b.	Units : Millions
+c.	Reporting Basis = Restated
+d.	Period Category : Annual
+e.	Historical Period : 2021 - 2025
+9)	Connect to DB Server “Server Name” , “DB Name” with Windows authentication
+10)	Select Table table  Name : Table_name1
+a.	Select * from Table_Name1 and comanyid = selected sdsid
+11)	Validate Data populated in Table should match with Data Populated in UI one by one. 
+12)	
