@@ -14,18 +14,18 @@ COMPLETION_STATUSES = [
     "Closed",
     "Ready for UAT",
     "In UAT",
-    "Accepted for Release"
+    "Accepted for Release",
+    "Rejected"
 ]
 
 
 # =====================================================
-# Story Point Calculation (Transition Based Credit)
+# Story Points (Status-Based Completion)
 # =====================================================
 
 def calculate_story_points(issues):
 
-    assigned_records = []
-    completed_records = []
+    records = []
 
     for issue in issues:
         fields = issue.get("fields", {})
@@ -37,61 +37,45 @@ def calculate_story_points(issues):
         sp = fields.get(STORY_POINT_FIELD, 0) or 0
         sp = float(sp)
 
-        # ----------------------------
-        # Assigned SP (Current Assignee)
-        # ----------------------------
         assignee = fields.get("assignee")
         assignee_name = assignee["displayName"] if assignee else "Unassigned"
 
-        assigned_records.append({
+        current_status = fields.get("status", {}).get("name", "")
+
+        is_completed = current_status in COMPLETION_STATUSES
+
+        records.append({
             "user": assignee_name,
-            "story_points": sp
+            "story_points": sp,
+            "is_completed": is_completed
         })
 
-        # ----------------------------
-        # Completed SP (Transition Based)
-        # ----------------------------
-        changelog = issue.get("changelog", {}).get("histories", [])
+    df = pd.DataFrame(records)
 
-        for history in changelog:
-            author = history.get("author", {}).get("displayName")
+    if df.empty:
+        return df
 
-            for item in history.get("items", []):
-                if item.get("field") == "status":
-                    to_status = item.get("toString")
-
-                    if to_status in COMPLETION_STATUSES:
-                        completed_records.append({
-                            "user": author,
-                            "story_points": sp
-                        })
-                        break
-
-    df_assigned = pd.DataFrame(assigned_records)
-    df_completed = pd.DataFrame(completed_records)
-
-    if df_assigned.empty:
-        return pd.DataFrame()
-
-    assigned = df_assigned.groupby("user", as_index=False).agg(
+    # Assigned SP
+    assigned = df.groupby("user", as_index=False).agg(
         assigned_sp=("story_points", "sum")
     )
 
-    if not df_completed.empty:
-        completed = df_completed.groupby("user", as_index=False).agg(
-            completed_sp=("story_points", "sum")
-        )
-    else:
-        completed = pd.DataFrame(columns=["user", "completed_sp"])
+    # Completed SP
+    completed = df[df["is_completed"]].groupby(
+        "user", as_index=False
+    ).agg(
+        completed_sp=("story_points", "sum")
+    )
 
     result = assigned.merge(completed, on="user", how="left")
-
     result["completed_sp"] = result["completed_sp"].fillna(0)
 
+    # Spillover
     result["spillover_sp"] = (
         result["assigned_sp"] - result["completed_sp"]
     )
 
+    # Completion %
     result["completion_%"] = (
         result["completed_sp"] /
         result["assigned_sp"].replace(0, 1)
@@ -101,7 +85,7 @@ def calculate_story_points(issues):
 
 
 # =====================================================
-# Worklog Calculation
+# Worklog (Previous Version – No Optimization Change)
 # =====================================================
 
 def calculate_worklog(client, issues, start_date, end_date):
