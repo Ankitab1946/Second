@@ -1,88 +1,102 @@
 import pandas as pd
-from datetime import datetime
-
 
 STORY_POINT_FIELD = "customfield_10003"
+
+VALID_ISSUE_TYPES = [
+    "Story",
+    "Task",
+    "Sub-task",
+    "Bug"
+]
+
+COMPLETION_STATUSES = [
+    "Closed",
+    "Ready for UAT",
+    "In UAT",
+    "Accepted for Release"
+]
 
 
 def calculate_story_points(issues):
 
-    records = []
+    assigned_records = []
+    completed_records = []
 
     for issue in issues:
         fields = issue.get("fields", {})
 
+        issue_type = fields.get("issuetype", {}).get("name", "")
+        if issue_type not in VALID_ISSUE_TYPES:
+            continue
+
+        sp = fields.get(STORY_POINT_FIELD, 0) or 0
+        sp = float(sp)
+
+        # ----------------------------
+        # Assigned SP (Current Assignee)
+        # ----------------------------
         assignee = fields.get("assignee")
         assignee_name = assignee["displayName"] if assignee else "Unassigned"
 
-        sp = fields.get(STORY_POINT_FIELD, 0) or 0
-        status = fields.get("status", {}).get("name", "")
-
-        records.append({
-            "assignee": assignee_name,
-            "story_points": float(sp),
-            "status": status
+        assigned_records.append({
+            "user": assignee_name,
+            "story_points": sp
         })
 
-    df = pd.DataFrame(records)
+        # ----------------------------
+        # Completed SP (Transition Based)
+        # ----------------------------
+        changelog = issue.get("changelog", {}).get("histories", [])
 
-    if df.empty:
-        return df
+        for history in changelog:
+            author = history.get("author", {}).get("displayName")
 
-    grouped = df.groupby("assignee", as_index=False).agg(
+            for item in history.get("items", []):
+                if item.get("field") == "status":
+                    to_status = item.get("toString")
+
+                    if to_status in COMPLETION_STATUSES:
+                        completed_records.append({
+                            "user": author,
+                            "story_points": sp
+                        })
+                        break
+
+    df_assigned = pd.DataFrame(assigned_records)
+    df_completed = pd.DataFrame(completed_records)
+
+    if df_assigned.empty:
+        return pd.DataFrame()
+
+    assigned = df_assigned.groupby("user", as_index=False).agg(
         assigned_sp=("story_points", "sum")
     )
 
-    completed = df[
-        df["status"].str.lower().str.contains("done")
-    ].groupby("assignee", as_index=False)["story_points"].sum()
+    if not df_completed.empty:
+        completed = df_completed.groupby("user", as_index=False).agg(
+            completed_sp=("story_points", "sum")
+        )
+    else:
+        completed = pd.DataFrame(columns=["user", "completed_sp"])
 
-    completed.columns = ["assignee", "completed_sp"]
+    result = assigned.merge(
+        completed,
+        on="user",
+        how="left"
+    )
 
-    grouped = grouped.merge(completed, on="assignee", how="left")
-    grouped["completed_sp"] = grouped["completed_sp"].fillna(0)
+    result["completed_sp"] = result["completed_sp"].fillna(0)
 
-    grouped["spillover_sp"] = grouped["assigned_sp"] - grouped["completed_sp"]
+    result["spillover_sp"] = (
+        result["assigned_sp"] - result["completed_sp"]
+    )
 
-    grouped["completion_%"] = (
-        grouped["completed_sp"] /
-        grouped["assigned_sp"].replace(0, 1)
+    result["completion_%"] = (
+        result["completed_sp"] /
+        result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    return grouped
-
-
-def calculate_worklog(client, issues, start_date, end_date):
-
-    data = []
-
-    for issue in issues:
-        worklogs = client.get_worklogs(issue["key"])
-
-        for wl in worklogs:
-            author = wl["author"]["displayName"]
-            time_spent = wl["timeSpentSeconds"] / 3600
-
-            created = wl.get("started")
-            if created:
-                wl_date = datetime.strptime(
-                    created[:10], "%Y-%m-%d"
-                ).date()
-
-                if start_date and end_date:
-                    if not (start_date <= wl_date <= end_date):
-                        continue
-
-            data.append({
-                "author": author,
-                "hours": time_spent
-            })
-
-    df = pd.DataFrame(data)
-
-    if df.empty:
-        return df
-
-    return df.groupby("author", as_index=False).agg(
-        total_hours=("hours", "sum")
+    return result.sort_values(
+        by="assigned_sp",
+        ascending=False
     )
