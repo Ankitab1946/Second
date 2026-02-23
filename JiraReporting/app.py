@@ -1,12 +1,10 @@
 import streamlit as st
-import pandas as pd
 from datetime import datetime
 from jira_client import JiraClient
 from metrics import calculate_story_points, calculate_worklog
 from charts import *
 
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
-
 st.title("📊 Jira Resource Performance Dashboard")
 
 # ---------------- Sidebar ----------------
@@ -22,6 +20,7 @@ end_date = st.sidebar.date_input("End Date")
 
 connect = st.sidebar.button("Connect")
 
+# ---------------- Connect ----------------
 if connect:
     try:
         client = JiraClient(base_url, username, password, verify_ssl)
@@ -32,7 +31,6 @@ if connect:
         st.error(str(e))
 
 # ---------------- Dashboard ----------------
-
 if "client" in st.session_state:
 
     client = st.session_state["client"]
@@ -43,27 +41,31 @@ if "client" in st.session_state:
     # Date Filter via JQL
     date_filter = ""
     if start_date and end_date:
-        date_filter = f' AND updated >= "{start_date}" AND updated <= "{end_date}"'
+        date_filter = (
+            f' AND updated >= "{start_date}" '
+            f'AND updated <= "{end_date}"'
+        )
 
     jql = f'project = {project_key}{date_filter}'
 
-    with st.spinner("Loading issues..."):
+    with st.spinner("Loading issues with changelog..."):
         issues = client.search_issues(
             jql,
-            fields="key,assignee,status,customfield_10003"
+            fields="key,assignee,status,issuetype,customfield_10003",
+            batch_size=50  # smaller batch for changelog
         )
 
     tab1, tab2, tab3 = st.tabs(
         ["📊 Sprint Summary", "⏱ Worklog", "📥 Export"]
     )
 
-    # -------- Story Points --------
+    # ---------------- Story Points ----------------
     with tab1:
 
         df_sp = calculate_story_points(issues)
 
         if df_sp.empty:
-            st.warning("No Story Point data found.")
+            st.warning("No valid Story Point data found.")
         else:
             st.dataframe(df_sp, use_container_width=True)
 
@@ -82,7 +84,7 @@ if "client" in st.session_state:
                 use_container_width=True
             )
 
-    # -------- Worklog --------
+    # ---------------- Worklog ----------------
     with tab2:
 
         df_work = calculate_worklog(
@@ -97,11 +99,10 @@ if "client" in st.session_state:
         else:
             st.dataframe(df_work, use_container_width=True)
 
-    # -------- Export --------
+    # ---------------- Export ----------------
     with tab3:
 
         if not df_sp.empty:
-
             csv = df_sp.to_csv(index=False).encode("utf-8")
 
             st.download_button(
