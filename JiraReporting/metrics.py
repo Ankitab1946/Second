@@ -1,6 +1,10 @@
 import pandas as pd
 from datetime import datetime
 
+# =====================================================
+# CONFIGURATION
+# =====================================================
+
 STORY_POINT_FIELD = "customfield_10003"
 
 VALID_ISSUE_TYPES = [
@@ -8,6 +12,10 @@ VALID_ISSUE_TYPES = [
     "Task",
     "Bug",
     "Sub-task"
+]
+
+EXCLUDED_WORKLOG_TYPES = [
+    "Xray Test"
 ]
 
 COMPLETION_STATUSES = [
@@ -18,9 +26,8 @@ COMPLETION_STATUSES = [
     "Rejected"
 ]
 
-
 # =====================================================
-# Sprint Summary (Story Points)
+# STORY POINT CALCULATION
 # =====================================================
 
 def calculate_story_points(issues, selected_users=None):
@@ -29,11 +36,11 @@ def calculate_story_points(issues, selected_users=None):
     completed_records = []
 
     for issue in issues:
-        fields = issue.get("fields", {})
 
+        fields = issue.get("fields", {})
         issue_type = fields.get("issuetype", {}).get("name", "")
 
-        # 🔹 Only valid issue types
+        # Only valid types for SP
         if issue_type not in VALID_ISSUE_TYPES:
             continue
 
@@ -42,18 +49,18 @@ def calculate_story_points(issues, selected_users=None):
         assignee = fields.get("assignee")
         user = assignee["displayName"] if assignee else "Unassigned"
 
-        # 🔹 Assignee filter
+        # Assignee filter
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
                 continue
 
-        # ✅ Assigned SP (ALL status)
+        # Assigned SP (all statuses)
         assigned_records.append({
             "user": user,
             "story_points": sp
         })
 
-        # ✅ Completed SP (Only specific statuses)
+        # Completed SP (status-based)
         status = fields.get("status", {}).get("name", "")
 
         if status in COMPLETION_STATUSES:
@@ -95,7 +102,7 @@ def calculate_story_points(issues, selected_users=None):
 
 
 # =====================================================
-# Worklog (All Issue Types)
+# WORKLOG CALCULATION
 # =====================================================
 
 def calculate_worklog(client,
@@ -108,19 +115,31 @@ def calculate_worklog(client,
 
     for issue in issues:
 
+        fields = issue.get("fields", {})
+        issue_type = fields.get("issuetype", {}).get("name", "")
+
+        # Skip excluded issue types
+        if issue_type in EXCLUDED_WORKLOG_TYPES:
+            continue
+
         worklogs = client.get_worklogs(issue["key"])
 
         for wl in worklogs:
-            author = wl["author"]["displayName"]
+
+            author = wl.get("author", {}).get("displayName")
+
+            if not author:
+                continue
 
             # Assignee filter
             if selected_users and "All" not in selected_users:
                 if author not in selected_users:
                     continue
 
-            hours = wl["timeSpentSeconds"] / 3600
+            hours = wl.get("timeSpentSeconds", 0) / 3600
 
             started = wl.get("started")
+
             if started:
                 wl_date = datetime.strptime(
                     started[:10], "%Y-%m-%d"
