@@ -7,7 +7,7 @@ from charts import *
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
-# ---------------- Sidebar ----------------
+# ---------------- Sidebar Config ----------------
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -33,52 +33,72 @@ if "client" in st.session_state:
 
     client = st.session_state["client"]
 
-    # ---------------- Project ----------------
-    projects = client.get_projects()
-    project_key = st.sidebar.selectbox("Select Project", projects["key"])
+    # -------- Project --------
+    projects_df = client.get_projects()
 
-    # ---------------- Date Filter ----------------
+    if projects_df.empty:
+        st.warning("No Projects Found")
+        st.stop()
+
+    project_key = st.sidebar.selectbox(
+        "Select Project",
+        projects_df["key"]
+    )
+
+    # -------- Date Filter --------
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
 
-    # ---------------- Board & Sprint ----------------
-    boards = client.get_boards()
+    # -------- Board --------
+    boards_df = client.get_boards()
 
-    board_names = [b["name"] for b in boards]
-    selected_board = st.sidebar.selectbox("Select Board", board_names)
+    if boards_df.empty:
+        st.warning("No Boards Found")
+        st.stop()
 
-    board_id = next(b["id"] for b in boards if b["name"] == selected_board)
+    selected_board_name = st.sidebar.selectbox(
+        "Select Board",
+        boards_df["name"]
+    )
 
-    sprints = client.get_sprints(board_id)
+    selected_board_row = boards_df[
+        boards_df["name"] == selected_board_name
+    ].iloc[0]
 
-    sprint_names = ["All"] + [s["name"] for s in sprints]
+    board_id = selected_board_row["id"]
 
-    selected_sprint = st.sidebar.selectbox("Select Sprint", sprint_names)
+    # -------- Sprint --------
+    sprints_df = client.get_sprints(board_id)
 
-    # ---------------- JQL Construction ----------------
+    if sprints_df.empty:
+        sprint_names = ["All"]
+    else:
+        sprint_names = ["All"] + sprints_df["name"].tolist()
 
+    selected_sprint = st.sidebar.selectbox(
+        "Select Sprint",
+        sprint_names
+    )
+
+    # -------- JQL Construction --------
     jql = f'project = {project_key}'
 
-    # Date filter always applied
     if start_date and end_date:
         jql += (
             f' AND updated >= "{start_date}" '
             f'AND updated <= "{end_date}"'
         )
 
-    # Sprint filter optional
     if selected_sprint != "All":
         jql += f' AND sprint = "{selected_sprint}"'
 
-    # ---------------- Fetch Issues ----------------
-
+    # -------- Fetch Issues --------
     issues = client.search_issues(
         jql,
         fields="key,assignee,status,issuetype,customfield_10003"
     )
 
-    # ---------------- Multi-Select Assignee ----------------
-
+    # -------- Multi-Select Assignee --------
     assignees = set()
 
     for issue in issues:
@@ -94,12 +114,10 @@ if "client" in st.session_state:
         default=["All"]
     )
 
-    # ---------------- Tabs ----------------
-
+    # -------- Tabs --------
     tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
 
-    # ---------------- Sprint Summary ----------------
-
+    # -------- Sprint Summary --------
     with tab1:
 
         df_sp = calculate_story_points(issues, selected_users)
@@ -123,10 +141,9 @@ if "client" in st.session_state:
                 "text/csv"
             )
         else:
-            st.info("No Sprint Summary Data Found.")
+            st.info("No Sprint Summary Data Found")
 
-    # ---------------- Worklog ----------------
-
+    # -------- Worklog --------
     with tab2:
 
         df_work = calculate_worklog(
@@ -147,4 +164,4 @@ if "client" in st.session_state:
                 "text/csv"
             )
         else:
-            st.info("No Worklog Data Found.")
+            st.info("No Worklog Data Found")
