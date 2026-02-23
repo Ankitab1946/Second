@@ -1,0 +1,146 @@
+import streamlit as st
+import pandas as pd
+from jira_client import JiraClient
+from metrics import calculate_story_points, calculate_worklog
+from charts import *
+
+st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
+
+st.title("📊 Jira Resource Performance Dashboard")
+
+# ---------------------------------------------------
+# SIDEBAR CONFIGURATION
+# ---------------------------------------------------
+
+st.sidebar.header("🔧 Jira Configuration")
+
+base_url = st.sidebar.text_input(
+    "Jira Base URL",
+    placeholder="https://jira.company.com"
+)
+
+username = st.sidebar.text_input(
+    "Username"
+)
+
+password = st.sidebar.text_input(
+    "Password",
+    type="password"
+)
+
+verify_ssl = st.sidebar.checkbox("Verify SSL Certificate", value=True)
+
+connect_button = st.sidebar.button("🔌 Connect to Jira")
+
+# ---------------------------------------------------
+# CONNECTION HANDLING
+# ---------------------------------------------------
+
+if connect_button:
+
+    if not base_url or not username or not password:
+        st.sidebar.error("Please fill all required fields.")
+    else:
+        try:
+            client = JiraClient(
+                base_url=base_url,
+                username=username,
+                password=password,
+                verify_ssl=verify_ssl
+            )
+
+            # Test connection
+            client.test_connection()
+
+            st.session_state["client"] = client
+            st.sidebar.success("Connected Successfully!")
+
+        except Exception as e:
+            st.sidebar.error(f"Connection Failed: {str(e)}")
+
+
+# ---------------------------------------------------
+# MAIN DASHBOARD
+# ---------------------------------------------------
+
+if "client" in st.session_state:
+
+    client = st.session_state["client"]
+
+    try:
+        projects = client.get_projects()
+
+        project_key = st.sidebar.selectbox(
+            "Select Project",
+            projects["key"]
+        )
+
+        jql = f'project = {project_key}'
+        issues = client.search_issues(jql)
+
+        if not issues:
+            st.warning("No issues found for selected project.")
+        else:
+            # -------------------------------
+            # STORY POINTS METRICS
+            # -------------------------------
+
+            df_sp = calculate_story_points(issues)
+
+            st.subheader("📌 Story Points Overview")
+
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric(
+                "Total Assigned SP",
+                int(df_sp["assigned_sp"].sum())
+            )
+
+            col2.metric(
+                "Total Completed SP",
+                int(df_sp["completed_sp"].sum())
+            )
+
+            col3.metric(
+                "Total Spillover SP",
+                int(df_sp["spillover_sp"].sum())
+            )
+
+            st.plotly_chart(
+                bar_assigned_vs_completed(df_sp),
+                use_container_width=True
+            )
+
+            st.plotly_chart(
+                stacked_spillover(df_sp),
+                use_container_width=True
+            )
+
+            st.plotly_chart(
+                pie_sp_distribution(df_sp),
+                use_container_width=True
+            )
+
+            # -------------------------------
+            # WORKLOG METRICS
+            # -------------------------------
+
+            st.subheader("⏱ Worklog Summary")
+
+            df_work = calculate_worklog(
+                client,
+                issues,
+                None,
+                None
+            )
+
+            if not df_work.empty:
+                st.dataframe(df_work, use_container_width=True)
+            else:
+                st.info("No worklog data available.")
+
+    except Exception as e:
+        st.error(f"Error loading dashboard: {str(e)}")
+
+else:
+    st.info("Please connect to Jira from the sidebar to load dashboard.")
