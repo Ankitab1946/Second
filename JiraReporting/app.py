@@ -44,10 +44,6 @@ if "client" in st.session_state:
 
     projects_df = client.get_projects()
 
-    if projects_df.empty:
-        st.warning("No Projects Found")
-        st.stop()
-
     default_project = "ANKPRJ"
 
     if default_project in projects_df["key"].values:
@@ -66,151 +62,120 @@ if "client" in st.session_state:
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
 
-    # =====================================================
-    # STEP 1: Build JQL Based on Date Only
-    # =====================================================
+    # ---------------- Sprint Input (manual JQL-based) ----------------
+    sprint_name = st.sidebar.text_input("Sprint Name (Optional)")
 
-    jql = f'project = {project_key}'
+    # ---------------- Apply Button ----------------
 
-    if start_date:
-        jql += f' AND created >= "{start_date}"'
+    apply_filters = st.sidebar.button("Apply Filters")
 
-    if end_date:
-        jql += f' AND updated <= "{end_date}"'
+    if apply_filters:
 
-    # Fetch issues initially based on date filter only
-    issues = client.search_issues(
-        jql,
-        fields="key,assignee,status,issuetype,customfield_10003,sprint"
-    )
+        # =====================================================
+        # Build JQL
+        # =====================================================
 
-    # =====================================================
-    # STEP 2: Populate Sprint Dropdown From Retrieved Issues
-    # =====================================================
+        jql = f'project = {project_key}'
 
-    sprint_names = set()
+        if start_date:
+            jql += f' AND created >= "{start_date}"'
 
-    for issue in issues:
-        sprint_field = issue.get("fields", {}).get("sprint")
+        if end_date:
+            jql += f' AND updated <= "{end_date}"'
 
-        if sprint_field:
-            if isinstance(sprint_field, list):
-                for s in sprint_field:
-                    sprint_names.add(s.get("name"))
-            else:
-                sprint_names.add(sprint_field.get("name"))
+        if sprint_name:
+            jql += f' AND sprint = "{sprint_name}"'
 
-    sprint_list = ["All"] + sorted(list(sprint_names))
+        st.sidebar.write("JQL Used:")
+        st.sidebar.code(jql)
 
-    selected_sprint = st.sidebar.selectbox(
-        "Select Sprint",
-        sprint_list
-    )
+        # =====================================================
+        # Fetch Issues
+        # =====================================================
 
-    # =====================================================
-    # STEP 3: Apply Sprint Filter If Selected
-    # =====================================================
-
-    if selected_sprint != "All":
-
-        filtered_issues = []
-
-        for issue in issues:
-            sprint_field = issue.get("fields", {}).get("sprint")
-
-            if sprint_field:
-                if isinstance(sprint_field, list):
-                    issue_sprints = [s.get("name") for s in sprint_field]
-                    if selected_sprint in issue_sprints:
-                        filtered_issues.append(issue)
-                else:
-                    if sprint_field.get("name") == selected_sprint:
-                        filtered_issues.append(issue)
-
-        issues = filtered_issues
-
-    # =====================================================
-    # Multi-Select Assignee Filter
-    # =====================================================
-
-    assignees = set()
-
-    for issue in issues:
-        assignee = issue.get("fields", {}).get("assignee")
-        if assignee:
-            assignees.add(assignee["displayName"])
-
-    assignee_list = ["All"] + sorted(list(assignees))
-
-    selected_users = st.sidebar.multiselect(
-        "Filter by Assignee",
-        assignee_list,
-        default=["All"]
-    )
-
-    # =====================================================
-    # Tabs
-    # =====================================================
-
-    tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
-
-    # ---------------- Sprint Summary ----------------
-
-    with tab1:
-
-        df_sp = calculate_story_points(issues, selected_users)
-
-        if not df_sp.empty:
-
-            st.dataframe(df_sp, use_container_width=True)
-
-            st.plotly_chart(
-                bar_assigned_vs_completed(df_sp),
-                use_container_width=True
-            )
-
-            st.plotly_chart(
-                stacked_spillover(df_sp),
-                use_container_width=True
-            )
-
-            st.plotly_chart(
-                pie_sp_distribution(df_sp),
-                use_container_width=True
-            )
-
-            st.download_button(
-                "Download Sprint Summary CSV",
-                df_sp.to_csv(index=False),
-                "sprint_summary.csv",
-                "text/csv"
-            )
-
-        else:
-            st.info("No Sprint Summary Data Found")
-
-    # ---------------- Worklog ----------------
-
-    with tab2:
-
-        df_work = calculate_worklog(
-            client,
-            issues,
-            start_date,
-            end_date,
-            selected_users
+        issues = client.search_issues(
+            jql,
+            fields="key,assignee,status,issuetype,customfield_10003"
         )
 
-        if not df_work.empty:
+        st.session_state["filtered_issues"] = issues
 
-            st.dataframe(df_work, use_container_width=True)
+    # =====================================================
+    # Use Filtered Issues
+    # =====================================================
 
-            st.download_button(
-                "Download Worklog CSV",
-                df_work.to_csv(index=False),
-                "worklog.csv",
-                "text/csv"
+    if "filtered_issues" in st.session_state:
+
+        issues = st.session_state["filtered_issues"]
+
+        # ---------------- Assignee Multi-Select ----------------
+
+        assignees = set()
+
+        for issue in issues:
+            assignee = issue.get("fields", {}).get("assignee")
+            if assignee:
+                assignees.add(assignee["displayName"])
+
+        assignee_list = ["All"] + sorted(list(assignees))
+
+        selected_users = st.sidebar.multiselect(
+            "Filter by Assignee",
+            assignee_list,
+            default=["All"]
+        )
+
+        # ---------------- Tabs ----------------
+
+        tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
+
+        # ---------------- Sprint Summary ----------------
+
+        with tab1:
+
+            df_sp = calculate_story_points(issues, selected_users)
+
+            if not df_sp.empty:
+                st.dataframe(df_sp, use_container_width=True)
+
+                st.plotly_chart(bar_assigned_vs_completed(df_sp),
+                                use_container_width=True)
+
+                st.plotly_chart(stacked_spillover(df_sp),
+                                use_container_width=True)
+
+                st.plotly_chart(pie_sp_distribution(df_sp),
+                                use_container_width=True)
+
+                st.download_button(
+                    "Download Sprint Summary CSV",
+                    df_sp.to_csv(index=False),
+                    "sprint_summary.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No Sprint Summary Data Found")
+
+        # ---------------- Worklog ----------------
+
+        with tab2:
+
+            df_work = calculate_worklog(
+                client,
+                issues,
+                start_date,
+                end_date,
+                selected_users
             )
 
-        else:
-            st.info("No Worklog Data Found")
+            if not df_work.empty:
+                st.dataframe(df_work, use_container_width=True)
+
+                st.download_button(
+                    "Download Worklog CSV",
+                    df_work.to_csv(index=False),
+                    "worklog.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No Worklog Data Found")
