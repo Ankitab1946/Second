@@ -32,8 +32,6 @@ def calculate_story_points(issues, selected_users=None):
         fields = issue.get("fields", {})
 
         issue_type = fields.get("issuetype", {}).get("name", "")
-
-        # 🔹 Exclude Feature & other non-valid types
         if issue_type not in VALID_SP_TYPES:
             continue
 
@@ -42,18 +40,18 @@ def calculate_story_points(issues, selected_users=None):
         assignee = fields.get("assignee")
         user = assignee["displayName"] if assignee else "Unassigned"
 
-        # 🔹 Apply multi-user filter
+        # Multi-user filter
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
                 continue
 
-        # ✅ Assigned SP (status ignored completely)
+        # Assigned SP (ignore status completely)
         assigned_records.append({
             "user": user,
             "story_points": sp
         })
 
-        # ✅ Completed SP (status-based only)
+        # Completed SP (status based only)
         status = fields.get("status", {}).get("name", "")
 
         if status in COMPLETION_STATUSES:
@@ -95,7 +93,7 @@ def calculate_story_points(issues, selected_users=None):
 
 
 # =====================================================
-# Worklog (All Issue Types, Any Status)
+# Worklog (All Issue Types)
 # =====================================================
 
 def calculate_worklog(client,
@@ -113,7 +111,7 @@ def calculate_worklog(client,
         for wl in worklogs:
             author = wl["author"]["displayName"]
 
-            # 🔹 Multi-select user filter
+            # Multi-select filter
             if selected_users and "All" not in selected_users:
                 if author not in selected_users:
                     continue
