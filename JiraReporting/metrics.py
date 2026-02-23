@@ -20,17 +20,20 @@ COMPLETION_STATUSES = [
 
 
 # =====================================================
-# Sprint Summary (SP Metrics)
+# Sprint Summary (Story Points)
 # =====================================================
 
 def calculate_story_points(issues, selected_users=None):
 
-    records = []
+    assigned_records = []
+    completed_records = []
 
     for issue in issues:
         fields = issue.get("fields", {})
 
         issue_type = fields.get("issuetype", {}).get("name", "")
+
+        # 🔹 Exclude Feature & other non-valid types
         if issue_type not in VALID_SP_TYPES:
             continue
 
@@ -39,34 +42,42 @@ def calculate_story_points(issues, selected_users=None):
         assignee = fields.get("assignee")
         user = assignee["displayName"] if assignee else "Unassigned"
 
-        # Multi-user filter
+        # 🔹 Apply multi-user filter
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
                 continue
 
-        status = fields.get("status", {}).get("name", "")
-        is_completed = status in COMPLETION_STATUSES
-
-        records.append({
+        # ✅ Assigned SP (status ignored completely)
+        assigned_records.append({
             "user": user,
-            "story_points": sp,
-            "is_completed": is_completed
+            "story_points": sp
         })
 
-    df = pd.DataFrame(records)
+        # ✅ Completed SP (status-based only)
+        status = fields.get("status", {}).get("name", "")
 
-    if df.empty:
-        return df
+        if status in COMPLETION_STATUSES:
+            completed_records.append({
+                "user": user,
+                "story_points": sp
+            })
 
-    assigned = df.groupby("user", as_index=False).agg(
+    df_assigned = pd.DataFrame(assigned_records)
+    df_completed = pd.DataFrame(completed_records)
+
+    if df_assigned.empty:
+        return df_assigned
+
+    assigned = df_assigned.groupby("user", as_index=False).agg(
         assigned_sp=("story_points", "sum")
     )
 
-    completed = df[df["is_completed"]].groupby(
-        "user", as_index=False
-    ).agg(
-        completed_sp=("story_points", "sum")
-    )
+    if not df_completed.empty:
+        completed = df_completed.groupby("user", as_index=False).agg(
+            completed_sp=("story_points", "sum")
+        )
+    else:
+        completed = pd.DataFrame(columns=["user", "completed_sp"])
 
     result = assigned.merge(completed, on="user", how="left")
     result["completed_sp"] = result["completed_sp"].fillna(0)
@@ -80,14 +91,15 @@ def calculate_story_points(issues, selected_users=None):
         result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    return result
+    return result.sort_values(by="assigned_sp", ascending=False)
 
 
 # =====================================================
-# Worklog (All Issue Types)
+# Worklog (All Issue Types, Any Status)
 # =====================================================
 
-def calculate_worklog(client, issues,
+def calculate_worklog(client,
+                      issues,
                       start_date=None,
                       end_date=None,
                       selected_users=None):
@@ -101,7 +113,7 @@ def calculate_worklog(client, issues,
         for wl in worklogs:
             author = wl["author"]["displayName"]
 
-            # Multi-select filter
+            # 🔹 Multi-select user filter
             if selected_users and "All" not in selected_users:
                 if author not in selected_users:
                     continue
