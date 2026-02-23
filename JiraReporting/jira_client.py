@@ -52,11 +52,21 @@ class JiraClient:
         data = self._request("GET", "/rest/api/2/project")
         return pd.DataFrame(data)
 
-    def get_boards(self):
-        data = self._request("GET", "/rest/agile/1.0/board")
+    def get_boards(self, project_key=None):
+        params = {}
+
+        if project_key:
+            params["projectKeyOrId"] = project_key
+
+        data = self._request(
+            "GET",
+            "/rest/agile/1.0/board",
+            params=params
+        )
+
         boards_df = pd.DataFrame(data.get("values", []))
 
-        # 🔥 Keep only Scrum boards
+        # Keep only Scrum boards
         if not boards_df.empty and "type" in boards_df.columns:
             boards_df = boards_df[boards_df["type"] == "scrum"]
 
