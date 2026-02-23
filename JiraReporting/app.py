@@ -7,7 +7,7 @@ from charts import *
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
-# ---------------- Sidebar Config ----------------
+# ---------------- Sidebar ----------------
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -36,10 +36,6 @@ if "client" in st.session_state:
     # -------- Project (Default ANKPRJ) --------
     projects_df = client.get_projects()
 
-    if projects_df.empty:
-        st.warning("No Projects Found")
-        st.stop()
-
     default_project = "ANKPRJ"
 
     if default_project in projects_df["key"].values:
@@ -61,7 +57,6 @@ if "client" in st.session_state:
     boards_df = client.get_boards(project_key)
 
     if boards_df.empty:
-        st.warning("No Scrum Boards Found for this Project")
         selected_sprint = "All"
     else:
         selected_board_name = st.sidebar.selectbox(
@@ -75,7 +70,6 @@ if "client" in st.session_state:
 
         board_id = selected_board_row["id"]
 
-        # -------- Sprint --------
         sprints_df = client.get_sprints(board_id)
 
         if sprints_df.empty:
@@ -88,14 +82,14 @@ if "client" in st.session_state:
             sprint_names
         )
 
-    # -------- JQL Construction --------
+    # -------- JQL --------
     jql = f'project = {project_key}'
 
-    if start_date and end_date:
-        jql += (
-            f' AND updated >= "{start_date}" '
-            f'AND updated <= "{end_date}"'
-        )
+    if start_date:
+        jql += f' AND created >= "{start_date}"'
+
+    if end_date:
+        jql += f' AND updated <= "{end_date}"'
 
     if selected_sprint != "All":
         jql += f' AND sprint = "{selected_sprint}"'
@@ -148,8 +142,6 @@ if "client" in st.session_state:
                 "sprint_summary.csv",
                 "text/csv"
             )
-        else:
-            st.info("No Sprint Summary Data Found")
 
     # -------- Worklog --------
     with tab2:
@@ -171,5 +163,3 @@ if "client" in st.session_state:
                 "worklog.csv",
                 "text/csv"
             )
-        else:
-            st.info("No Worklog Data Found")
