@@ -1,5 +1,4 @@
 import streamlit as st
-from datetime import datetime
 from jira_client import JiraClient
 from metrics import calculate_story_points, calculate_worklog
 from charts import *
@@ -7,7 +6,9 @@ from charts import *
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
-# ---------------- Sidebar ----------------
+# =====================================================
+# Sidebar Configuration
+# =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -18,6 +19,10 @@ verify_ssl = st.sidebar.checkbox("Verify SSL", value=True)
 
 connect = st.sidebar.button("Connect")
 
+# =====================================================
+# Connection Handling
+# =====================================================
+
 if connect:
     try:
         client = JiraClient(base_url, username, password, verify_ssl)
@@ -27,13 +32,16 @@ if connect:
     except Exception as e:
         st.error(str(e))
 
-# ---------------- Dashboard ----------------
+# =====================================================
+# Dashboard
+# =====================================================
 
 if "client" in st.session_state:
 
     client = st.session_state["client"]
 
-    # -------- Project (Default ANKPRJ) --------
+    # ---------------- Project ----------------
+
     projects_df = client.get_projects()
 
     default_project = "ANKPRJ"
@@ -49,11 +57,13 @@ if "client" in st.session_state:
         index=default_index
     )
 
-    # -------- Date Filter --------
+    # ---------------- Date Filter ----------------
+
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
 
-    # -------- Board (Project Specific) --------
+    # ---------------- Scrum Board (Project Scoped) ----------------
+
     boards_df = client.get_boards(project_key)
 
     if boards_df.empty:
@@ -82,25 +92,37 @@ if "client" in st.session_state:
             sprint_names
         )
 
-    # -------- JQL --------
+    # =====================================================
+    # JQL Construction
+    # =====================================================
+
     jql = f'project = {project_key}'
 
+    # Start Date → created >=
     if start_date:
         jql += f' AND created >= "{start_date}"'
 
+    # End Date → updated <=
     if end_date:
         jql += f' AND updated <= "{end_date}"'
 
+    # Sprint Filter
     if selected_sprint != "All":
         jql += f' AND sprint = "{selected_sprint}"'
 
-    # -------- Fetch Issues --------
+    # =====================================================
+    # Fetch Issues
+    # =====================================================
+
     issues = client.search_issues(
         jql,
         fields="key,assignee,status,issuetype,customfield_10003"
     )
 
-    # -------- Multi-Select Assignee --------
+    # =====================================================
+    # Multi-select Assignee Filter
+    # =====================================================
+
     assignees = set()
 
     for issue in issues:
@@ -116,25 +138,36 @@ if "client" in st.session_state:
         default=["All"]
     )
 
-    # -------- Tabs --------
+    # =====================================================
+    # Tabs
+    # =====================================================
+
     tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
 
-    # -------- Sprint Summary --------
+    # ---------------- Sprint Summary ----------------
+
     with tab1:
 
         df_sp = calculate_story_points(issues, selected_users)
 
         if not df_sp.empty:
+
             st.dataframe(df_sp, use_container_width=True)
 
-            st.plotly_chart(bar_assigned_vs_completed(df_sp),
-                            use_container_width=True)
+            st.plotly_chart(
+                bar_assigned_vs_completed(df_sp),
+                use_container_width=True
+            )
 
-            st.plotly_chart(stacked_spillover(df_sp),
-                            use_container_width=True)
+            st.plotly_chart(
+                stacked_spillover(df_sp),
+                use_container_width=True
+            )
 
-            st.plotly_chart(pie_sp_distribution(df_sp),
-                            use_container_width=True)
+            st.plotly_chart(
+                pie_sp_distribution(df_sp),
+                use_container_width=True
+            )
 
             st.download_button(
                 "Download Sprint Summary CSV",
@@ -143,7 +176,11 @@ if "client" in st.session_state:
                 "text/csv"
             )
 
-    # -------- Worklog --------
+        else:
+            st.info("No Sprint Summary Data Found")
+
+    # ---------------- Worklog ----------------
+
     with tab2:
 
         df_work = calculate_worklog(
@@ -155,6 +192,7 @@ if "client" in st.session_state:
         )
 
         if not df_work.empty:
+
             st.dataframe(df_work, use_container_width=True)
 
             st.download_button(
@@ -163,3 +201,6 @@ if "client" in st.session_state:
                 "worklog.csv",
                 "text/csv"
             )
+
+        else:
+            st.info("No Worklog Data Found")
