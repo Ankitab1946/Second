@@ -2,7 +2,10 @@ import pandas as pd
 from datetime import datetime
 
 
-def calculate_story_points(issues, story_point_field):
+STORY_POINT_FIELD = "customfield_10003"
+
+
+def calculate_story_points(issues):
 
     records = []
 
@@ -12,7 +15,7 @@ def calculate_story_points(issues, story_point_field):
         assignee = fields.get("assignee")
         assignee_name = assignee["displayName"] if assignee else "Unassigned"
 
-        sp = fields.get(story_point_field, 0) or 0
+        sp = fields.get(STORY_POINT_FIELD, 0) or 0
         status = fields.get("status", {}).get("name", "")
 
         records.append({
@@ -82,4 +85,4 @@ def calculate_worklog(client, issues, start_date, end_date):
 
     return df.groupby("author", as_index=False).agg(
         total_hours=("hours", "sum")
-    )   
+    )
