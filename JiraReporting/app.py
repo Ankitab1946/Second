@@ -7,7 +7,7 @@ from charts import *
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
-# ---------------- Sidebar Config ----------------
+# ---------------- Sidebar ----------------
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -53,34 +53,34 @@ if "client" in st.session_state:
     boards_df = client.get_boards()
 
     if boards_df.empty:
-        st.warning("No Boards Found")
-        st.stop()
-
-    selected_board_name = st.sidebar.selectbox(
-        "Select Board",
-        boards_df["name"]
-    )
-
-    selected_board_row = boards_df[
-        boards_df["name"] == selected_board_name
-    ].iloc[0]
-
-    board_id = selected_board_row["id"]
-
-    # -------- Sprint --------
-    sprints_df = client.get_sprints(board_id)
-
-    if sprints_df.empty:
-        sprint_names = ["All"]
+        st.warning("No Scrum Boards Found")
+        selected_sprint = "All"
     else:
-        sprint_names = ["All"] + sprints_df["name"].tolist()
+        selected_board_name = st.sidebar.selectbox(
+            "Select Scrum Board",
+            boards_df["name"]
+        )
 
-    selected_sprint = st.sidebar.selectbox(
-        "Select Sprint",
-        sprint_names
-    )
+        selected_board_row = boards_df[
+            boards_df["name"] == selected_board_name
+        ].iloc[0]
 
-    # -------- JQL Construction --------
+        board_id = selected_board_row["id"]
+
+        # -------- Sprint --------
+        sprints_df = client.get_sprints(board_id)
+
+        if sprints_df.empty:
+            sprint_names = ["All"]
+        else:
+            sprint_names = ["All"] + sprints_df["name"].tolist()
+
+        selected_sprint = st.sidebar.selectbox(
+            "Select Sprint",
+            sprint_names
+        )
+
+    # -------- JQL --------
     jql = f'project = {project_key}'
 
     if start_date and end_date:
@@ -98,7 +98,7 @@ if "client" in st.session_state:
         fields="key,assignee,status,issuetype,customfield_10003"
     )
 
-    # -------- Multi-Select Assignee --------
+    # -------- Multi-select Assignee --------
     assignees = set()
 
     for issue in issues:
