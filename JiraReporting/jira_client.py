@@ -1,21 +1,15 @@
-import os
 import requests
+import pandas as pd
 from requests.auth import HTTPBasicAuth
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import urllib3
-import pandas as pd
 
 
 class JiraClient:
     def __init__(self, base_url, username, password, verify_ssl=True, timeout=120):
-
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
         self.verify_ssl = verify_ssl
-
-        if verify_ssl is False:
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self.timeout = timeout
 
         self.session = requests.Session()
         self.session.auth = HTTPBasicAuth(username, password)
@@ -34,44 +28,40 @@ class JiraClient:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-        if os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"):
-            self.session.proxies = {
-                "http": os.getenv("HTTP_PROXY"),
-                "https": os.getenv("HTTPS_PROXY")
-            }
-
+    # ---------------- Generic Request ----------------
     def _request(self, method, endpoint, params=None):
         url = f"{self.base_url}{endpoint}"
 
-        try:
-            response = self.session.request(
-                method,
-                url,
-                params=params,
-                timeout=self.timeout,
-                verify=self.verify_ssl
-            )
-            response.raise_for_status()
-            return response.json()
+        response = self.session.request(
+            method,
+            url,
+            params=params,
+            timeout=self.timeout,
+            verify=self.verify_ssl
+        )
 
-        except requests.exceptions.Timeout:
-            raise Exception("Connection Timeout: Jira took too long to respond.")
+        response.raise_for_status()
+        return response.json()
 
-        except requests.exceptions.HTTPError:
-            raise Exception(f"HTTP Error {response.status_code}: {response.text}")
-
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Connection Error: {str(e)}")
+    # ---------------- Basic APIs ----------------
 
     def test_connection(self):
         return self._request("GET", "/rest/api/2/myself")
 
     def get_projects(self):
         data = self._request("GET", "/rest/api/2/project")
-        return pd.DataFrame([
-            {"id": p["id"], "key": p["key"], "name": p["name"]}
-            for p in data
-        ])
+        return pd.DataFrame(data)
+
+    def get_boards(self):
+        data = self._request("GET", "/rest/agile/1.0/board")
+        return pd.DataFrame(data.get("values", []))
+
+    def get_sprints(self, board_id):
+        data = self._request(
+            "GET",
+            f"/rest/agile/1.0/board/{board_id}/sprint"
+        )
+        return pd.DataFrame(data.get("values", []))
 
     def search_issues(self, jql, fields, batch_size=100):
         start_at = 0
@@ -102,5 +92,8 @@ class JiraClient:
         return all_issues
 
     def get_worklogs(self, issue_key):
-        data = self._request("GET", f"/rest/api/2/issue/{issue_key}/worklog")
+        data = self._request(
+            "GET",
+            f"/rest/api/2/issue/{issue_key}/worklog"
+        )
         return data.get("worklogs", [])
