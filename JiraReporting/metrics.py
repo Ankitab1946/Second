@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import datetime
 
 STORY_POINT_FIELD = "customfield_10003"
 
@@ -16,6 +17,10 @@ COMPLETION_STATUSES = [
     "Accepted for Release"
 ]
 
+
+# =====================================================
+# Story Point Calculation (Transition Based Credit)
+# =====================================================
 
 def calculate_story_points(issues):
 
@@ -79,11 +84,7 @@ def calculate_story_points(issues):
     else:
         completed = pd.DataFrame(columns=["user", "completed_sp"])
 
-    result = assigned.merge(
-        completed,
-        on="user",
-        how="left"
-    )
+    result = assigned.merge(completed, on="user", how="left")
 
     result["completed_sp"] = result["completed_sp"].fillna(0)
 
@@ -96,7 +97,44 @@ def calculate_story_points(issues):
         result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    return result.sort_values(
-        by="assigned_sp",
-        ascending=False
+    return result.sort_values(by="assigned_sp", ascending=False)
+
+
+# =====================================================
+# Worklog Calculation
+# =====================================================
+
+def calculate_worklog(client, issues, start_date, end_date):
+
+    records = []
+
+    for issue in issues:
+        worklogs = client.get_worklogs(issue["key"])
+
+        for wl in worklogs:
+            author = wl["author"]["displayName"]
+            hours = wl["timeSpentSeconds"] / 3600
+
+            started = wl.get("started")
+            if started:
+                wl_date = datetime.strptime(
+                    started[:10], "%Y-%m-%d"
+                ).date()
+
+                if start_date and end_date:
+                    if not (start_date <= wl_date <= end_date):
+                        continue
+
+            records.append({
+                "user": author,
+                "hours": hours
+            })
+
+    df = pd.DataFrame(records)
+
+    if df.empty:
+        return df
+
+    return df.groupby("user", as_index=False).agg(
+        total_hours=("hours", "sum")
     )
