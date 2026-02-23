@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 from jira_client import JiraClient
 from metrics import calculate_story_points, calculate_worklog
 from charts import *
@@ -8,7 +9,7 @@ st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 
 st.title("📊 Jira Resource Performance Dashboard")
 
-# Sidebar
+# ---------------- Sidebar ----------------
 st.sidebar.header("🔧 Jira Configuration")
 
 base_url = st.sidebar.text_input("Jira Base URL")
@@ -16,10 +17,8 @@ username = st.sidebar.text_input("Username")
 password = st.sidebar.text_input("Password", type="password")
 verify_ssl = st.sidebar.checkbox("Verify SSL", value=True)
 
-story_point_field = st.sidebar.text_input(
-    "Story Point Field ID",
-    value="customfield_10016"
-)
+start_date = st.sidebar.date_input("Start Date")
+end_date = st.sidebar.date_input("End Date")
 
 connect = st.sidebar.button("Connect")
 
@@ -32,6 +31,8 @@ if connect:
     except Exception as e:
         st.error(str(e))
 
+# ---------------- Dashboard ----------------
+
 if "client" in st.session_state:
 
     client = st.session_state["client"]
@@ -39,25 +40,27 @@ if "client" in st.session_state:
     projects = client.get_projects()
     project_key = st.sidebar.selectbox("Select Project", projects["key"])
 
-    jql = f'project = {project_key}'
+    # Date Filter via JQL
+    date_filter = ""
+    if start_date and end_date:
+        date_filter = f' AND updated >= "{start_date}" AND updated <= "{end_date}"'
+
+    jql = f'project = {project_key}{date_filter}'
 
     with st.spinner("Loading issues..."):
         issues = client.search_issues(
             jql,
-            fields=f"key,assignee,status,{story_point_field}"
+            fields="key,assignee,status,customfield_10003"
         )
 
     tab1, tab2, tab3 = st.tabs(
         ["📊 Sprint Summary", "⏱ Worklog", "📥 Export"]
     )
 
-    # ---------------- Story Points ----------------
+    # -------- Story Points --------
     with tab1:
 
-        df_sp = calculate_story_points(
-            issues,
-            story_point_field
-        )
+        df_sp = calculate_story_points(issues)
 
         if df_sp.empty:
             st.warning("No Story Point data found.")
@@ -79,11 +82,8 @@ if "client" in st.session_state:
                 use_container_width=True
             )
 
-    # ---------------- Worklog ----------------
+    # -------- Worklog --------
     with tab2:
-
-        start_date = st.date_input("Start Date")
-        end_date = st.date_input("End Date")
 
         df_work = calculate_worklog(
             client,
@@ -97,7 +97,7 @@ if "client" in st.session_state:
         else:
             st.dataframe(df_work, use_container_width=True)
 
-    # ---------------- Export ----------------
+    # -------- Export --------
     with tab3:
 
         if not df_sp.empty:
