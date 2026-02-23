@@ -1,55 +1,79 @@
+import os
 import requests
 from requests.auth import HTTPBasicAuth
-import pandas as pd
-import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
+import pandas as pd
 
 
 class JiraClient:
-    def __init__(self, base_url, username, password, verify_ssl=True):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        verify_ssl=True,
+        timeout=120
+    ):
         """
-        :param base_url: Jira Base URL (e.g., https://jira.company.com)
-        :param username: Jira Username
-        :param password: Jira Password
-        :param verify_ssl: True/False or path to cert file
+        Production-ready Jira client for Jira Server/Data Center.
+
+        :param base_url: e.g. https://jira.company.com
+        :param username: Jira username
+        :param password: Jira password
+        :param verify_ssl: True | False | path to cert file
+        :param timeout: request timeout in seconds
         """
+
         self.base_url = base_url.rstrip("/")
-        self.auth = HTTPBasicAuth(username, password)
+        self.timeout = timeout
         self.verify_ssl = verify_ssl
 
+        # Disable warnings if SSL verification is off
         if verify_ssl is False:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+        # Session setup
         self.session = requests.Session()
-        self.session.auth = self.auth
+        self.session.auth = HTTPBasicAuth(username, password)
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json"
         })
 
-        # Retry Strategy (Enterprise Ready)
+        # Retry Strategy (Enterprise Safe)
         retries = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[500, 502, 503, 504]
+            total=5,
+            backoff_factor=1.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
         )
 
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-    # -------------------------------------
-    # Generic GET method
-    # -------------------------------------
-    def _get(self, endpoint, params=None):
+        # Auto-detect corporate proxy if exists
+        if os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"):
+            self.session.proxies = {
+                "http": os.getenv("HTTP_PROXY"),
+                "https": os.getenv("HTTPS_PROXY")
+            }
+
+    # ====================================================
+    # Generic Request Handler
+    # ====================================================
+
+    def _request(self, method: str, endpoint: str, params=None):
         url = f"{self.base_url}{endpoint}"
 
         try:
-            response = self.session.get(
-                url,
+            response = self.session.request(
+                method=method,
+                url=url,
                 params=params,
-                timeout=30,
+                timeout=self.timeout,
                 verify=self.verify_ssl
             )
 
@@ -57,72 +81,130 @@ class JiraClient:
             return response.json()
 
         except requests.exceptions.SSLError as e:
-            raise Exception("SSL Error: Check certificate configuration.") from e
+            raise Exception(
+                "SSL Error: Check certificate configuration or disable SSL verification."
+            ) from e
 
-        except requests.exceptions.HTTPError as e:
-            raise Exception(f"HTTP Error: {response.status_code} - {response.text}") from e
+        except requests.exceptions.Timeout:
+            raise Exception(
+                "Connection Timeout: Jira took too long to respond. "
+                "Try reducing data range or increasing timeout."
+            )
+
+        except requests.exceptions.HTTPError:
+            raise Exception(
+                f"HTTP Error {response.status_code}: {response.text}"
+            )
 
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Connection Error: {str(e)}") from e
+            raise Exception(f"Connection Error: {str(e)}")
 
-    # -------------------------------------
-    # Test Connection
-    # -------------------------------------
+    # ====================================================
+    # Connection Test
+    # ====================================================
+
     def test_connection(self):
-        return self._get("/rest/api/2/myself")
+        return self._request("GET", "/rest/api/2/myself")
 
-    # -------------------------------------
-    # Get Projects
-    # -------------------------------------
+    # ====================================================
+    # Projects
+    # ====================================================
+
     def get_projects(self):
-        data = self._get("/rest/api/2/project")
+        data = self._request("GET", "/rest/api/2/project")
+
         return pd.DataFrame([
             {
-                "id": p["id"],
-                "key": p["key"],
-                "name": p["name"]
-            } for p in data
+                "id": p.get("id"),
+                "key": p.get("key"),
+                "name": p.get("name")
+            }
+            for p in data
         ])
 
-    # -------------------------------------
-    # Get Boards (Agile API)
-    # -------------------------------------
+    # ====================================================
+    # Boards
+    # ====================================================
+
     def get_boards(self):
-        data = self._get("/rest/agile/1.0/board")
+        data = self._request("GET", "/rest/agile/1.0/board")
         return pd.DataFrame(data.get("values", []))
 
-    # -------------------------------------
-    # Get Sprints for Board
-    # -------------------------------------
+    # ====================================================
+    # Sprints
+    # ====================================================
+
     def get_sprints(self, board_id):
-        data = self._get(f"/rest/agile/1.0/board/{board_id}/sprint")
+        data = self._request(
+            "GET",
+            f"/rest/agile/1.0/board/{board_id}/sprint"
+        )
         return pd.DataFrame(data.get("values", []))
 
-    # -------------------------------------
-    # Search Issues
-    # -------------------------------------
-    def search_issues(self, jql, max_results=1000):
-        data = self._get(
-            "/rest/api/2/search",
-            params={
-                "jql": jql,
-                "maxResults": max_results
-            }
-        )
-        return data.get("issues", [])
+    # ====================================================
+    # Search Issues (Paginated)
+    # ====================================================
 
-    # -------------------------------------
-    # Get Worklogs
-    # -------------------------------------
+    def search_issues(
+        self,
+        jql: str,
+        fields: str = "key,assignee,status,customfield_10016",
+        batch_size: int = 100
+    ):
+        """
+        Paginated search to avoid timeout & large payload issues.
+        """
+
+        start_at = 0
+        all_issues = []
+
+        while True:
+            data = self._request(
+                "GET",
+                "/rest/api/2/search",
+                params={
+                    "jql": jql,
+                    "fields": fields,
+                    "startAt": start_at,
+                    "maxResults": batch_size
+                }
+            )
+
+            issues = data.get("issues", [])
+            total = data.get("total", 0)
+
+            all_issues.extend(issues)
+
+            if start_at + batch_size >= total:
+                break
+
+            start_at += batch_size
+
+        return all_issues
+
+    # ====================================================
+    # Worklogs
+    # ====================================================
+
     def get_worklogs(self, issue_key):
-        data = self._get(f"/rest/api/2/issue/{issue_key}/worklog")
+        data = self._request(
+            "GET",
+            f"/rest/api/2/issue/{issue_key}/worklog"
+        )
         return data.get("worklogs", [])
 
-    # -------------------------------------
-    # Get Development Info (Commits/PR)
-    # -------------------------------------
-    def get_dev_status(self, issue_key):
-        return self._get(
-            f"/rest/dev-status/1.0/issue/detail",
-            params={"issueId": issue_key}
+    # ====================================================
+    # Development Info (Commits / PRs)
+    # ====================================================
+
+    def get_dev_status(self, issue_id):
+        """
+        Requires Jira Dev Panel Integration.
+        May not work unless Bitbucket/Git is connected.
+        """
+
+        return self._request(
+            "GET",
+            "/rest/dev-status/1.0/issue/detail",
+            params={"issueId": issue_id}
         )
