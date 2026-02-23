@@ -3,7 +3,7 @@ from datetime import datetime
 
 STORY_POINT_FIELD = "customfield_10003"
 
-VALID_ISSUE_TYPES = [
+VALID_SP_TYPES = [
     "Story",
     "Task",
     "Sub-task",
@@ -20,10 +20,10 @@ COMPLETION_STATUSES = [
 
 
 # =====================================================
-# Story Points (Status-Based Completion)
+# Sprint Summary (SP Metrics)
 # =====================================================
 
-def calculate_story_points(issues):
+def calculate_story_points(issues, selected_users=None):
 
     records = []
 
@@ -31,21 +31,24 @@ def calculate_story_points(issues):
         fields = issue.get("fields", {})
 
         issue_type = fields.get("issuetype", {}).get("name", "")
-        if issue_type not in VALID_ISSUE_TYPES:
+        if issue_type not in VALID_SP_TYPES:
             continue
 
-        sp = fields.get(STORY_POINT_FIELD, 0) or 0
-        sp = float(sp)
+        sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
 
         assignee = fields.get("assignee")
-        assignee_name = assignee["displayName"] if assignee else "Unassigned"
+        user = assignee["displayName"] if assignee else "Unassigned"
 
-        current_status = fields.get("status", {}).get("name", "")
+        # Multi-user filter
+        if selected_users and "All" not in selected_users:
+            if user not in selected_users:
+                continue
 
-        is_completed = current_status in COMPLETION_STATUSES
+        status = fields.get("status", {}).get("name", "")
+        is_completed = status in COMPLETION_STATUSES
 
         records.append({
-            "user": assignee_name,
+            "user": user,
             "story_points": sp,
             "is_completed": is_completed
         })
@@ -55,12 +58,10 @@ def calculate_story_points(issues):
     if df.empty:
         return df
 
-    # Assigned SP
     assigned = df.groupby("user", as_index=False).agg(
         assigned_sp=("story_points", "sum")
     )
 
-    # Completed SP
     completed = df[df["is_completed"]].groupby(
         "user", as_index=False
     ).agg(
@@ -70,33 +71,41 @@ def calculate_story_points(issues):
     result = assigned.merge(completed, on="user", how="left")
     result["completed_sp"] = result["completed_sp"].fillna(0)
 
-    # Spillover
     result["spillover_sp"] = (
         result["assigned_sp"] - result["completed_sp"]
     )
 
-    # Completion %
     result["completion_%"] = (
         result["completed_sp"] /
         result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    return result.sort_values(by="assigned_sp", ascending=False)
+    return result
 
 
 # =====================================================
-# Worklog (Previous Version – No Optimization Change)
+# Worklog (All Issue Types)
 # =====================================================
 
-def calculate_worklog(client, issues, start_date, end_date):
+def calculate_worklog(client, issues,
+                      start_date=None,
+                      end_date=None,
+                      selected_users=None):
 
     records = []
 
     for issue in issues:
+
         worklogs = client.get_worklogs(issue["key"])
 
         for wl in worklogs:
             author = wl["author"]["displayName"]
+
+            # Multi-select filter
+            if selected_users and "All" not in selected_users:
+                if author not in selected_users:
+                    continue
+
             hours = wl["timeSpentSeconds"] / 3600
 
             started = wl.get("started")
@@ -111,6 +120,7 @@ def calculate_worklog(client, issues, start_date, end_date):
 
             records.append({
                 "user": author,
+                "issue_key": issue["key"],
                 "hours": hours
             })
 
