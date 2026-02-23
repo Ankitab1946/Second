@@ -3,11 +3,11 @@ from datetime import datetime
 
 STORY_POINT_FIELD = "customfield_10003"
 
-VALID_SP_TYPES = [
+VALID_ISSUE_TYPES = [
     "Story",
     "Task",
-    "Sub-task",
-    "Bug"
+    "Bug",
+    "Sub-task"
 ]
 
 COMPLETION_STATUSES = [
@@ -32,7 +32,9 @@ def calculate_story_points(issues, selected_users=None):
         fields = issue.get("fields", {})
 
         issue_type = fields.get("issuetype", {}).get("name", "")
-        if issue_type not in VALID_SP_TYPES:
+
+        # 🔹 Only valid issue types
+        if issue_type not in VALID_ISSUE_TYPES:
             continue
 
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
@@ -40,18 +42,18 @@ def calculate_story_points(issues, selected_users=None):
         assignee = fields.get("assignee")
         user = assignee["displayName"] if assignee else "Unassigned"
 
-        # Multi-user filter
+        # 🔹 Assignee filter
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
                 continue
 
-        # Assigned SP (ignore status completely)
+        # ✅ Assigned SP (ALL status)
         assigned_records.append({
             "user": user,
             "story_points": sp
         })
 
-        # Completed SP (status based only)
+        # ✅ Completed SP (Only specific statuses)
         status = fields.get("status", {}).get("name", "")
 
         if status in COMPLETION_STATUSES:
@@ -111,7 +113,7 @@ def calculate_worklog(client,
         for wl in worklogs:
             author = wl["author"]["displayName"]
 
-            # Multi-select filter
+            # Assignee filter
             if selected_users and "All" not in selected_users:
                 if author not in selected_users:
                     continue
@@ -124,9 +126,11 @@ def calculate_worklog(client,
                     started[:10], "%Y-%m-%d"
                 ).date()
 
-                if start_date and end_date:
-                    if not (start_date <= wl_date <= end_date):
-                        continue
+                if start_date and wl_date < start_date:
+                    continue
+
+                if end_date and wl_date > end_date:
+                    continue
 
             records.append({
                 "user": author,
