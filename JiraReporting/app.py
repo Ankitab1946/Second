@@ -7,7 +7,7 @@ from charts import *
 st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
-# ---------------- Sidebar ----------------
+# ---------------- Sidebar Config ----------------
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -33,27 +33,35 @@ if "client" in st.session_state:
 
     client = st.session_state["client"]
 
-    # -------- Project --------
+    # -------- Project (Default ANKPRJ) --------
     projects_df = client.get_projects()
 
     if projects_df.empty:
         st.warning("No Projects Found")
         st.stop()
 
+    default_project = "ANKPRJ"
+
+    if default_project in projects_df["key"].values:
+        default_index = projects_df["key"].tolist().index(default_project)
+    else:
+        default_index = 0
+
     project_key = st.sidebar.selectbox(
         "Select Project",
-        projects_df["key"]
+        projects_df["key"],
+        index=default_index
     )
 
     # -------- Date Filter --------
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
 
-    # -------- Board --------
-    boards_df = client.get_boards()
+    # -------- Board (Project Specific) --------
+    boards_df = client.get_boards(project_key)
 
     if boards_df.empty:
-        st.warning("No Scrum Boards Found")
+        st.warning("No Scrum Boards Found for this Project")
         selected_sprint = "All"
     else:
         selected_board_name = st.sidebar.selectbox(
@@ -80,7 +88,7 @@ if "client" in st.session_state:
             sprint_names
         )
 
-    # -------- JQL --------
+    # -------- JQL Construction --------
     jql = f'project = {project_key}'
 
     if start_date and end_date:
@@ -98,7 +106,7 @@ if "client" in st.session_state:
         fields="key,assignee,status,issuetype,customfield_10003"
     )
 
-    # -------- Multi-select Assignee --------
+    # -------- Multi-Select Assignee --------
     assignees = set()
 
     for issue in issues:
