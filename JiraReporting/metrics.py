@@ -1,22 +1,10 @@
 import pandas as pd
 from datetime import datetime
 
-# =====================================================
-# CONFIGURATION
-# =====================================================
-
 STORY_POINT_FIELD = "customfield_10003"
 
-VALID_ISSUE_TYPES = [
-    "Story",
-    "Task",
-    "Bug",
-    "Sub-task"
-]
-
-EXCLUDED_WORKLOG_TYPES = [
-    "Xray Test"
-]
+VALID_ISSUE_TYPES = ["Story", "Task", "Bug", "Sub-task"]
+EXCLUDED_WORKLOG_TYPES = ["Xray Test"]
 
 COMPLETION_STATUSES = [
     "Closed",
@@ -32,106 +20,83 @@ COMPLETION_STATUSES = [
 
 def calculate_story_points(issues, selected_users=None):
 
-    assigned_records = []
-    completed_records = []
+    records = []
 
     for issue in issues:
-
         fields = issue.get("fields", {})
         issue_type = fields.get("issuetype", {}).get("name", "")
 
-        # Only valid types for SP
         if issue_type not in VALID_ISSUE_TYPES:
             continue
 
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
+        status = fields.get("status", {}).get("name", "")
 
         assignee = fields.get("assignee")
         user = assignee["displayName"] if assignee else "Unassigned"
 
-        # Assignee filter
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
                 continue
 
-        # Assigned SP (all statuses)
-        assigned_records.append({
+        records.append({
             "user": user,
-            "story_points": sp
+            "sp": sp,
+            "status": status
         })
 
-        # Completed SP (status-based)
-        status = fields.get("status", {}).get("name", "")
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
 
-        if status in COMPLETION_STATUSES:
-            completed_records.append({
-                "user": user,
-                "story_points": sp
-            })
+    assigned = df.groupby("user", as_index=False)["sp"].sum()
+    assigned.rename(columns={"sp": "assigned_sp"}, inplace=True)
 
-    df_assigned = pd.DataFrame(assigned_records)
-    df_completed = pd.DataFrame(completed_records)
-
-    if df_assigned.empty:
-        return df_assigned
-
-    assigned = df_assigned.groupby("user", as_index=False).agg(
-        assigned_sp=("story_points", "sum")
-    )
-
-    if not df_completed.empty:
-        completed = df_completed.groupby("user", as_index=False).agg(
-            completed_sp=("story_points", "sum")
-        )
-    else:
-        completed = pd.DataFrame(columns=["user", "completed_sp"])
+    completed = df[df["status"].isin(COMPLETION_STATUSES)] \
+        .groupby("user", as_index=False)["sp"].sum()
+    completed.rename(columns={"sp": "completed_sp"}, inplace=True)
 
     result = assigned.merge(completed, on="user", how="left")
     result["completed_sp"] = result["completed_sp"].fillna(0)
 
-    result["spillover_sp"] = (
-        result["assigned_sp"] - result["completed_sp"]
-    )
+    result["spillover_sp"] = result["assigned_sp"] - result["completed_sp"]
 
     result["completion_%"] = (
         result["completed_sp"] /
         result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    return result.sort_values(by="assigned_sp", ascending=False)
+    result["commitment_health"] = result["completion_%"].apply(
+        lambda x: "Over" if x > 100 else
+                  "Under" if x < 80 else
+                  "Healthy"
+    )
+
+    return result
 
 
 # =====================================================
-# WORKLOG CALCULATION
+# WORKLOG
 # =====================================================
 
-def calculate_worklog(client,
-                      issues,
-                      start_date=None,
-                      end_date=None,
-                      selected_users=None):
+def calculate_worklog(client, issues, start_date=None, end_date=None, selected_users=None):
 
     records = []
 
     for issue in issues:
-
         fields = issue.get("fields", {})
         issue_type = fields.get("issuetype", {}).get("name", "")
 
-        # Skip excluded issue types
         if issue_type in EXCLUDED_WORKLOG_TYPES:
             continue
 
         worklogs = client.get_worklogs(issue["key"])
 
         for wl in worklogs:
-
             author = wl.get("author", {}).get("displayName")
-
             if not author:
                 continue
 
-            # Assignee filter
             if selected_users and "All" not in selected_users:
                 if author not in selected_users:
                     continue
@@ -139,29 +104,89 @@ def calculate_worklog(client,
             hours = wl.get("timeSpentSeconds", 0) / 3600
 
             started = wl.get("started")
-
             if started:
-                wl_date = datetime.strptime(
-                    started[:10], "%Y-%m-%d"
-                ).date()
+                wl_date = datetime.strptime(started[:10], "%Y-%m-%d").date()
 
                 if start_date and wl_date < start_date:
                     continue
-
                 if end_date and wl_date > end_date:
                     continue
 
             records.append({
                 "user": author,
-                "issue_key": issue["key"],
                 "hours": hours
             })
 
     df = pd.DataFrame(records)
-
     if df.empty:
         return df
 
-    return df.groupby("user", as_index=False).agg(
-        total_hours=("hours", "sum")
+    return df.groupby("user", as_index=False).sum()
+
+
+# =====================================================
+# EFFICIENCY
+# =====================================================
+
+def calculate_efficiency(df_sp, df_work):
+
+    df = df_sp.merge(df_work, on="user", how="left")
+    df["hours"] = df["hours"].fillna(0)
+
+    df["efficiency"] = df.apply(
+        lambda x: x["completed_sp"] / x["hours"]
+        if x["hours"] > 0 else 0,
+        axis=1
     )
+
+    return df
+
+
+# =====================================================
+# VELOCITY (SPRINT-WISE)
+# =====================================================
+
+def calculate_velocity(issues):
+
+    records = []
+
+    for issue in issues:
+        fields = issue.get("fields", {})
+        sprint = fields.get("sprint")
+        status = fields.get("status", {}).get("name", "")
+        sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
+
+        if sprint and status in COMPLETION_STATUSES:
+
+            if isinstance(sprint, list):
+                sprint_names = [s.get("name") for s in sprint]
+            else:
+                sprint_names = [sprint.get("name")]
+
+            for s in sprint_names:
+                records.append({"sprint": s, "completed_sp": sp})
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+
+    return df.groupby("sprint", as_index=False).sum()
+
+
+# =====================================================
+# TEAM SCORE
+# =====================================================
+
+def calculate_team_score(df_sp, df_work):
+
+    total_completed = df_sp["completed_sp"].sum()
+    total_assigned = df_sp["assigned_sp"].sum()
+    total_hours = df_work["hours"].sum() if not df_work.empty else 0
+
+    if total_assigned == 0 or total_hours == 0:
+        return 0
+
+    commitment_ratio = total_completed / total_assigned
+    productivity_ratio = total_completed / total_hours
+
+    return round(commitment_ratio * productivity_ratio, 2)
