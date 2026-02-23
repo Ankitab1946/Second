@@ -7,7 +7,7 @@ st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
 # =====================================================
-# Sidebar - Jira Config
+# Sidebar - Jira Configuration
 # =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
@@ -18,6 +18,10 @@ password = st.sidebar.text_input("Password", type="password")
 verify_ssl = st.sidebar.checkbox("Verify SSL", value=True)
 
 connect = st.sidebar.button("Connect")
+
+# =====================================================
+# Connect to Jira
+# =====================================================
 
 if connect:
     try:
@@ -39,6 +43,11 @@ if "client" in st.session_state:
     # ---------------- Project ----------------
 
     projects_df = client.get_projects()
+
+    if projects_df.empty:
+        st.warning("No Projects Found")
+        st.stop()
+
     default_project = "ANKPRJ"
 
     if default_project in projects_df["key"].values:
@@ -57,7 +66,7 @@ if "client" in st.session_state:
     boards_df = client.get_boards(project_key)
 
     if boards_df.empty:
-        st.warning("No Scrum Boards Found")
+        st.warning("No Scrum Boards Found for selected project.")
         st.stop()
 
     board_name = st.sidebar.selectbox(
@@ -67,7 +76,7 @@ if "client" in st.session_state:
 
     board_id = boards_df[boards_df["name"] == board_name].iloc[0]["id"]
 
-    # ---------------- Sprint Dropdown ----------------
+    # ---------------- Sprint ----------------
 
     sprints_df = client.get_sprints(board_id)
 
@@ -80,7 +89,7 @@ if "client" in st.session_state:
         sprint_list
     )
 
-    # ---------------- Date Range ----------------
+    # ---------------- Date Filters ----------------
 
     start_date = st.sidebar.date_input("Start Date", value=None)
     end_date = st.sidebar.date_input("End Date", value=None)
@@ -93,18 +102,22 @@ if "client" in st.session_state:
 
         jql = f'project = {project_key}'
 
-        # Date Filter
+        # Start Date → YYYY-MM-DD
         if start_date:
-            jql += f' AND created >= "{start_date.strftime("%Y%m%d")}"'
+            start_str = start_date.strftime("%Y-%m-%d")
+            jql += f' AND created >= "{start_str}"'
 
+        # End Date → YYYYMMDD inside endOfDay()
         if end_date:
-            jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
+            end_str = end_date.strftime("%Y%m%d")
+            jql += f' AND updated < endOfDay("{end_str}")'
 
         # Sprint Filter
         if selected_sprints:
             sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
             jql += f' AND sprint in ({sprint_clause})'
 
+        # Show applied filters
         st.sidebar.markdown("### 🔎 Applied Filters")
         st.sidebar.code(jql)
 
@@ -116,7 +129,7 @@ if "client" in st.session_state:
         st.session_state["filtered_issues"] = issues
 
     # =====================================================
-    # If Filtered Data Exists
+    # Process Filtered Issues
     # =====================================================
 
     if "filtered_issues" in st.session_state:
@@ -151,16 +164,23 @@ if "client" in st.session_state:
             df_sp = calculate_story_points(issues, selected_users)
 
             if not df_sp.empty:
+
                 st.dataframe(df_sp, use_container_width=True)
 
-                st.plotly_chart(bar_assigned_vs_completed(df_sp),
-                                use_container_width=True)
+                st.plotly_chart(
+                    bar_assigned_vs_completed(df_sp),
+                    use_container_width=True
+                )
 
-                st.plotly_chart(stacked_spillover(df_sp),
-                                use_container_width=True)
+                st.plotly_chart(
+                    stacked_spillover(df_sp),
+                    use_container_width=True
+                )
 
-                st.plotly_chart(pie_sp_distribution(df_sp),
-                                use_container_width=True)
+                st.plotly_chart(
+                    pie_sp_distribution(df_sp),
+                    use_container_width=True
+                )
 
                 st.download_button(
                     "Download Sprint Summary CSV",
@@ -168,6 +188,7 @@ if "client" in st.session_state:
                     "sprint_summary.csv",
                     "text/csv"
                 )
+
             else:
                 st.info("No Sprint Summary Data Found")
 
@@ -184,6 +205,7 @@ if "client" in st.session_state:
             )
 
             if not df_work.empty:
+
                 st.dataframe(df_work, use_container_width=True)
 
                 st.download_button(
@@ -192,5 +214,6 @@ if "client" in st.session_state:
                     "worklog.csv",
                     "text/csv"
                 )
+
             else:
                 st.info("No Worklog Data Found")
