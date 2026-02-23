@@ -54,14 +54,23 @@ class JiraClient:
 
     def get_boards(self):
         data = self._request("GET", "/rest/agile/1.0/board")
-        return pd.DataFrame(data.get("values", []))
+        boards_df = pd.DataFrame(data.get("values", []))
+
+        # 🔥 Keep only Scrum boards
+        if not boards_df.empty and "type" in boards_df.columns:
+            boards_df = boards_df[boards_df["type"] == "scrum"]
+
+        return boards_df
 
     def get_sprints(self, board_id):
-        data = self._request(
-            "GET",
-            f"/rest/agile/1.0/board/{board_id}/sprint"
-        )
-        return pd.DataFrame(data.get("values", []))
+        try:
+            data = self._request(
+                "GET",
+                f"/rest/agile/1.0/board/{board_id}/sprint"
+            )
+            return pd.DataFrame(data.get("values", []))
+        except requests.exceptions.HTTPError:
+            return pd.DataFrame()
 
     def search_issues(self, jql, fields, batch_size=100):
         start_at = 0
