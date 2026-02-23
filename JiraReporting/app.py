@@ -33,59 +33,42 @@ if "client" in st.session_state:
 
     client = st.session_state["client"]
 
+    # ---------------- Project ----------------
     projects = client.get_projects()
     project_key = st.sidebar.selectbox("Select Project", projects["key"])
 
-    filter_mode = st.sidebar.radio(
-        "Filter Mode",
-        ["Sprint", "Date Range"]
-    )
+    # ---------------- Date Filter ----------------
+    start_date = st.sidebar.date_input("Start Date")
+    end_date = st.sidebar.date_input("End Date")
 
-    # ---------------- Filter Setup ----------------
+    # ---------------- Board & Sprint ----------------
+    boards = client.get_boards()
 
-    if filter_mode == "Sprint":
+    board_names = [b["name"] for b in boards]
+    selected_board = st.sidebar.selectbox("Select Board", board_names)
 
-        boards = client.get_boards()
-        board_names = [b["name"] for b in boards]
-        selected_board = st.sidebar.selectbox("Select Board", board_names)
+    board_id = next(b["id"] for b in boards if b["name"] == selected_board)
 
-        board_id = next(
-            b["id"] for b in boards if b["name"] == selected_board
+    sprints = client.get_sprints(board_id)
+
+    sprint_names = ["All"] + [s["name"] for s in sprints]
+
+    selected_sprint = st.sidebar.selectbox("Select Sprint", sprint_names)
+
+    # ---------------- JQL Construction ----------------
+
+    jql = f'project = {project_key}'
+
+    # Date filter always applied
+    if start_date and end_date:
+        jql += (
+            f' AND updated >= "{start_date}" '
+            f'AND updated <= "{end_date}"'
         )
 
-        sprints = client.get_sprints(board_id)
-        sprint_names = [s["name"] for s in sprints]
-        selected_sprint = st.sidebar.selectbox("Select Sprint", sprint_names)
-
-        sprint_data = next(
-            s for s in sprints if s["name"] == selected_sprint
-        )
-
-        sprint_start = None
-        sprint_end = None
-
-        if sprint_data.get("startDate"):
-            sprint_start = datetime.fromisoformat(
-                sprint_data["startDate"][:10]
-            ).date()
-
-        if sprint_data.get("endDate"):
-            sprint_end = datetime.fromisoformat(
-                sprint_data["endDate"][:10]
-            ).date()
-
-        jql = f'project = {project_key} AND sprint = "{selected_sprint}"'
-
-    else:
-
-        sprint_start = st.sidebar.date_input("Start Date")
-        sprint_end = st.sidebar.date_input("End Date")
-
-        jql = (
-            f'project = {project_key} '
-            f'AND updated >= "{sprint_start}" '
-            f'AND updated <= "{sprint_end}"'
-        )
+    # Sprint filter optional
+    if selected_sprint != "All":
+        jql += f' AND sprint = "{selected_sprint}"'
 
     # ---------------- Fetch Issues ----------------
 
@@ -103,8 +86,7 @@ if "client" in st.session_state:
         if assignee:
             assignees.add(assignee["displayName"])
 
-    assignee_list = sorted(list(assignees))
-    assignee_list.insert(0, "All")
+    assignee_list = ["All"] + sorted(list(assignees))
 
     selected_users = st.sidebar.multiselect(
         "Filter by Assignee",
@@ -150,8 +132,8 @@ if "client" in st.session_state:
         df_work = calculate_worklog(
             client,
             issues,
-            sprint_start,
-            sprint_end,
+            start_date,
+            end_date,
             selected_users
         )
 
