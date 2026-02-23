@@ -7,7 +7,7 @@ st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
 st.title("📊 Jira Resource Performance Dashboard")
 
 # =====================================================
-# Sidebar Configuration
+# Sidebar - Jira Config
 # =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
@@ -18,10 +18,6 @@ password = st.sidebar.text_input("Password", type="password")
 verify_ssl = st.sidebar.checkbox("Verify SSL", value=True)
 
 connect = st.sidebar.button("Connect")
-
-# =====================================================
-# Connect to Jira
-# =====================================================
 
 if connect:
     try:
@@ -43,11 +39,6 @@ if "client" in st.session_state:
     # ---------------- Project ----------------
 
     projects_df = client.get_projects()
-
-    if projects_df.empty:
-        st.warning("No Projects Found")
-        st.stop()
-
     default_project = "ANKPRJ"
 
     if default_project in projects_df["key"].values:
@@ -61,161 +52,145 @@ if "client" in st.session_state:
         index=default_index
     )
 
-    # ---------------- Date Filters ----------------
+    # ---------------- Scrum Board ----------------
 
-    start_date = st.sidebar.date_input("Start Date", value=None)
-    end_date = st.sidebar.date_input("End Date", value=None)
+    boards_df = client.get_boards(project_key)
 
-    # =====================================================
-    # STEP 1: Build JQL (Date Optional)
-    # =====================================================
+    if boards_df.empty:
+        st.warning("No Scrum Boards Found")
+        st.stop()
 
-    base_jql = f'project = {project_key}'
-
-    if start_date:
-        start_str = start_date.strftime("%Y%m%d")
-        base_jql += f' AND created >= "{start_str}"'
-
-    if end_date:
-        end_str = end_date.strftime("%Y%m%d")
-        base_jql += f' AND updated < endOfDay("{end_str}")'
-
-    # Fetch issues (date filtered or full project)
-    issues = client.search_issues(
-        base_jql,
-        fields="key,assignee,status,issuetype,customfield_10003,sprint"
+    board_name = st.sidebar.selectbox(
+        "Select Scrum Board",
+        boards_df["name"]
     )
 
-    # =====================================================
-    # STEP 2: Populate Sprint Multi-Select
-    # =====================================================
+    board_id = boards_df[boards_df["name"] == board_name].iloc[0]["id"]
 
-    sprint_set = set()
+    # ---------------- Sprint Dropdown ----------------
 
-    for issue in issues:
-        sprint_field = issue.get("fields", {}).get("sprint")
+    sprints_df = client.get_sprints(board_id)
 
-        if sprint_field:
-            if isinstance(sprint_field, list):
-                for s in sprint_field:
-                    if s:
-                        sprint_set.add(s.get("name"))
-            else:
-                sprint_set.add(sprint_field.get("name"))
-
-    sprint_list = sorted(list(sprint_set))
+    sprint_list = []
+    if not sprints_df.empty:
+        sprint_list = sprints_df["name"].tolist()
 
     selected_sprints = st.sidebar.multiselect(
         "Select Sprint(s)",
         sprint_list
     )
 
-    # =====================================================
-    # STEP 3: Apply Sprint Filter (If Selected)
-    # =====================================================
+    # ---------------- Date Range ----------------
 
-    if selected_sprints:
+    start_date = st.sidebar.date_input("Start Date", value=None)
+    end_date = st.sidebar.date_input("End Date", value=None)
 
-        filtered_issues = []
+    # ---------------- Apply Filter ----------------
 
-        for issue in issues:
-            sprint_field = issue.get("fields", {}).get("sprint")
+    apply_filter = st.sidebar.button("Apply Filter")
 
-            if sprint_field:
-                issue_sprints = []
+    if apply_filter:
 
-                if isinstance(sprint_field, list):
-                    issue_sprints = [s.get("name") for s in sprint_field if s]
-                else:
-                    issue_sprints = [sprint_field.get("name")]
+        jql = f'project = {project_key}'
 
-                if any(s in issue_sprints for s in selected_sprints):
-                    filtered_issues.append(issue)
+        # Date Filter
+        if start_date:
+            jql += f' AND created >= "{start_date.strftime("%Y%m%d")}"'
 
-        issues = filtered_issues
+        if end_date:
+            jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
 
-    # =====================================================
-    # Assignee Multi-Select
-    # =====================================================
+        # Sprint Filter
+        if selected_sprints:
+            sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
+            jql += f' AND sprint in ({sprint_clause})'
 
-    assignees = set()
+        st.sidebar.markdown("### 🔎 Applied Filters")
+        st.sidebar.code(jql)
 
-    for issue in issues:
-        assignee = issue.get("fields", {}).get("assignee")
-        if assignee:
-            assignees.add(assignee["displayName"])
-
-    assignee_list = ["All"] + sorted(list(assignees))
-
-    selected_users = st.sidebar.multiselect(
-        "Filter by Assignee",
-        assignee_list,
-        default=["All"]
-    )
-
-    # =====================================================
-    # Tabs
-    # =====================================================
-
-    tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
-
-    # ---------------- Sprint Summary ----------------
-
-    with tab1:
-
-        df_sp = calculate_story_points(issues, selected_users)
-
-        if not df_sp.empty:
-
-            st.dataframe(df_sp, use_container_width=True)
-
-            st.plotly_chart(
-                bar_assigned_vs_completed(df_sp),
-                use_container_width=True
-            )
-
-            st.plotly_chart(
-                stacked_spillover(df_sp),
-                use_container_width=True
-            )
-
-            st.plotly_chart(
-                pie_sp_distribution(df_sp),
-                use_container_width=True
-            )
-
-            st.download_button(
-                "Download Sprint Summary CSV",
-                df_sp.to_csv(index=False),
-                "sprint_summary.csv",
-                "text/csv"
-            )
-
-        else:
-            st.info("No Sprint Summary Data Found")
-
-    # ---------------- Worklog ----------------
-
-    with tab2:
-
-        df_work = calculate_worklog(
-            client,
-            issues,
-            start_date,
-            end_date,
-            selected_users
+        issues = client.search_issues(
+            jql,
+            fields="key,assignee,status,issuetype,customfield_10003"
         )
 
-        if not df_work.empty:
+        st.session_state["filtered_issues"] = issues
 
-            st.dataframe(df_work, use_container_width=True)
+    # =====================================================
+    # If Filtered Data Exists
+    # =====================================================
 
-            st.download_button(
-                "Download Worklog CSV",
-                df_work.to_csv(index=False),
-                "worklog.csv",
-                "text/csv"
+    if "filtered_issues" in st.session_state:
+
+        issues = st.session_state["filtered_issues"]
+
+        # ---------------- Assignee ----------------
+
+        assignees = set()
+
+        for issue in issues:
+            assignee = issue.get("fields", {}).get("assignee")
+            if assignee:
+                assignees.add(assignee["displayName"])
+
+        assignee_list = ["All"] + sorted(list(assignees))
+
+        selected_users = st.sidebar.multiselect(
+            "Filter by Assignee",
+            assignee_list,
+            default=["All"]
+        )
+
+        # ---------------- Tabs ----------------
+
+        tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
+
+        # ---------------- Sprint Summary ----------------
+
+        with tab1:
+
+            df_sp = calculate_story_points(issues, selected_users)
+
+            if not df_sp.empty:
+                st.dataframe(df_sp, use_container_width=True)
+
+                st.plotly_chart(bar_assigned_vs_completed(df_sp),
+                                use_container_width=True)
+
+                st.plotly_chart(stacked_spillover(df_sp),
+                                use_container_width=True)
+
+                st.plotly_chart(pie_sp_distribution(df_sp),
+                                use_container_width=True)
+
+                st.download_button(
+                    "Download Sprint Summary CSV",
+                    df_sp.to_csv(index=False),
+                    "sprint_summary.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No Sprint Summary Data Found")
+
+        # ---------------- Worklog ----------------
+
+        with tab2:
+
+            df_work = calculate_worklog(
+                client,
+                issues,
+                start_date,
+                end_date,
+                selected_users
             )
 
-        else:
-            st.info("No Worklog Data Found")
+            if not df_work.empty:
+                st.dataframe(df_work, use_container_width=True)
+
+                st.download_button(
+                    "Download Worklog CSV",
+                    df_work.to_csv(index=False),
+                    "worklog.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No Worklog Data Found")
