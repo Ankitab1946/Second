@@ -37,16 +37,17 @@ def calculate_story_points(issues, selected_users=None):
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
-        issue_type = fields.get("issuetype", {}).get("name", "")
+        fields = issue.get("fields") or {}
+
+        issue_type = (fields.get("issuetype") or {}).get("name", "")
 
         if issue_type not in VALID_ISSUE_TYPES:
             continue
 
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
 
-        assignee = fields.get("assignee")
-        user = assignee["displayName"] if assignee else "Unassigned"
+        assignee = fields.get("assignee") or {}
+        user = assignee.get("displayName", "Unassigned")
 
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
@@ -57,7 +58,7 @@ def calculate_story_points(issues, selected_users=None):
             "story_points": sp
         })
 
-        status = fields.get("status", {}).get("name", "")
+        status = (fields.get("status") or {}).get("name", "")
 
         if status in COMPLETION_STATUSES:
             completed_records.append({
@@ -94,8 +95,6 @@ def calculate_story_points(issues, selected_users=None):
         result["assigned_sp"].replace(0, 1)
     ) * 100
 
-    # ================= Commitment Health =================
-
     def commitment_status(p):
         if p >= 100:
             return "Over Delivered"
@@ -125,17 +124,17 @@ def calculate_worklog(client,
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
-        issue_type = fields.get("issuetype", {}).get("name", "")
+        fields = issue.get("fields") or {}
+        issue_type = (fields.get("issuetype") or {}).get("name", "")
 
         if issue_type in EXCLUDED_WORKLOG_TYPES:
             continue
 
-        worklogs = client.get_worklogs(issue["key"])
+        worklogs = client.get_worklogs(issue.get("key"))
 
         for wl in worklogs:
 
-            author = wl.get("author", {}).get("displayName")
+            author = (wl.get("author") or {}).get("displayName")
             if not author:
                 continue
 
@@ -159,7 +158,7 @@ def calculate_worklog(client,
 
             records.append({
                 "user": author,
-                "issue_key": issue["key"],
+                "issue_key": issue.get("key"),
                 "hours": hours
             })
 
@@ -182,12 +181,7 @@ def calculate_efficiency(df_sp, df_work):
     if df_sp.empty or df_work.empty:
         return pd.DataFrame()
 
-    df = df_sp.merge(
-        df_work,
-        on="user",
-        how="left"
-    )
-
+    df = df_sp.merge(df_work, on="user", how="left")
     df["total_hours"] = df["total_hours"].fillna(0)
 
     df["efficiency"] = df.apply(
@@ -202,7 +196,7 @@ def calculate_efficiency(df_sp, df_work):
 
 
 # =====================================================
-# VELOCITY CALCULATION
+# VELOCITY CALCULATION (FIXED SAFE)
 # =====================================================
 
 def calculate_velocity(issues):
@@ -211,9 +205,9 @@ def calculate_velocity(issues):
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
+        fields = issue.get("fields") or {}
         sprint = fields.get("sprint")
-        status = fields.get("status", {}).get("name", "")
+        status = (fields.get("status") or {}).get("name", "")
 
         if not sprint:
             continue
@@ -222,9 +216,12 @@ def calculate_velocity(issues):
 
         if isinstance(sprint, list):
             if sprint:
-                sprint_name = sprint[-1].get("name")
+                sprint_name = (sprint[-1] or {}).get("name")
         else:
-            sprint_name = sprint.get("name")
+            sprint_name = (sprint or {}).get("name")
+
+        if not sprint_name:
+            continue
 
         if status in COMPLETION_STATUSES:
             sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
