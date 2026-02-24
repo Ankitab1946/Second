@@ -14,8 +14,9 @@ COMPLETION_STATUSES = [
     "Rejected"
 ]
 
+
 # =====================================================
-# STORY POINTS
+# STORY POINT CALCULATION
 # =====================================================
 
 def calculate_story_points(issues, selected_users=None):
@@ -29,21 +30,35 @@ def calculate_story_points(issues, selected_users=None):
         "commitment_health"
     ]
 
+    if not issues:
+        return pd.DataFrame(columns=columns)
+
     records = []
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
-        issue_type = fields.get("issuetype", {}).get("name", "")
+        if not issue:
+            continue
+
+        fields = issue.get("fields") or {}
+
+        issuetype_obj = fields.get("issuetype") or {}
+        issue_type = issuetype_obj.get("name", "")
 
         if issue_type not in VALID_ISSUE_TYPES:
             continue
 
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
-        status = fields.get("status", {}).get("name", "")
 
-        assignee = fields.get("assignee")
-        user = assignee["displayName"] if assignee else "Unassigned"
+        status_obj = fields.get("status") or {}
+        status = status_obj.get("name", "")
+
+        assignee_obj = fields.get("assignee")
+        user = (
+            assignee_obj.get("displayName")
+            if isinstance(assignee_obj, dict)
+            else "Unassigned"
+        )
 
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
@@ -78,9 +93,9 @@ def calculate_story_points(issues, selected_users=None):
     ) * 100
 
     result["commitment_health"] = result["completion_%"].apply(
-        lambda x: "Over" if x > 100
-        else "Under" if x < 80
-        else "Healthy"
+        lambda x: "Over" if x > 100 else
+                  "Under" if x < 80 else
+                  "Healthy"
     )
 
     return result[columns]
@@ -93,21 +108,32 @@ def calculate_story_points(issues, selected_users=None):
 def calculate_worklog(client, issues, start_date=None, end_date=None, selected_users=None):
 
     columns = ["user", "hours"]
+
+    if not issues:
+        return pd.DataFrame(columns=columns)
+
     records = []
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
-        issue_type = fields.get("issuetype", {}).get("name", "")
+        if not issue:
+            continue
+
+        fields = issue.get("fields") or {}
+
+        issuetype_obj = fields.get("issuetype") or {}
+        issue_type = issuetype_obj.get("name", "")
 
         if issue_type in EXCLUDED_WORKLOG_TYPES:
             continue
 
-        worklogs = client.get_worklogs(issue["key"])
+        worklogs = client.get_worklogs(issue.get("key"))
 
-        for wl in worklogs:
+        for wl in worklogs or []:
 
-            author = wl.get("author", {}).get("displayName")
+            author_obj = wl.get("author") or {}
+            author = author_obj.get("displayName")
+
             if not author:
                 continue
 
@@ -118,8 +144,15 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
             hours = wl.get("timeSpentSeconds", 0) / 3600
 
             started = wl.get("started")
+
             if started:
-                wl_date = datetime.strptime(started[:10], "%Y-%m-%d").date()
+                try:
+                    wl_date = datetime.strptime(
+                        started[:10],
+                        "%Y-%m-%d"
+                    ).date()
+                except:
+                    continue
 
                 if start_date and wl_date < start_date:
                     continue
@@ -165,24 +198,46 @@ def calculate_efficiency(df_sp, df_work):
 
 def calculate_velocity(issues):
 
+    if not issues:
+        return pd.DataFrame(columns=["sprint", "completed_sp"])
+
     records = []
 
     for issue in issues:
 
-        fields = issue.get("fields", {})
-        sprint = fields.get("sprint")
-        status = fields.get("status", {}).get("name", "")
+        if not issue:
+            continue
+
+        fields = issue.get("fields") or {}
+
+        sprint_field = fields.get("sprint")
+        status_obj = fields.get("status") or {}
+        status = status_obj.get("name", "")
+
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
 
-        if sprint and status in COMPLETION_STATUSES:
+        if not sprint_field:
+            continue
 
-            if isinstance(sprint, list):
-                sprint_names = [s.get("name") for s in sprint]
-            else:
-                sprint_names = [sprint.get("name")]
+        if status not in COMPLETION_STATUSES:
+            continue
 
-            for s in sprint_names:
-                records.append({"sprint": s, "completed_sp": sp})
+        if isinstance(sprint_field, list):
+            for s in sprint_field:
+                if s and isinstance(s, dict):
+                    name = s.get("name")
+                    if name:
+                        records.append({
+                            "sprint": name,
+                            "completed_sp": sp
+                        })
+        elif isinstance(sprint_field, dict):
+            name = sprint_field.get("name")
+            if name:
+                records.append({
+                    "sprint": name,
+                    "completed_sp": sp
+                })
 
     if not records:
         return pd.DataFrame(columns=["sprint", "completed_sp"])
