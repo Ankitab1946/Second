@@ -41,7 +41,7 @@ if "client" in st.session_state:
     client = st.session_state["client"]
 
     # =====================================================
-    # PROJECT
+    # PROJECT SELECTION
     # =====================================================
 
     projects_df = client.get_projects()
@@ -71,7 +71,7 @@ if "client" in st.session_state:
     end_date = st.sidebar.date_input("End Date", value=None)
 
     # =====================================================
-    # STEP 1 - POPULATE SPRINT LIST
+    # STEP 1 - POPULATE SPRINT LIST (SAFE)
     # =====================================================
 
     base_jql = f'project = {project_key}'
@@ -85,40 +85,51 @@ if "client" in st.session_state:
     issues_for_population = client.search_issues(
         base_jql,
         fields="key,sprint"
-    )
+    ) or []
 
     sprint_set = set()
 
     for issue in issues_for_population:
-        sprint_field = issue.get("fields", {}).get("sprint")
+
+        if not issue:
+            continue
+
+        fields = issue.get("fields") or {}
+        sprint_field = fields.get("sprint")
 
         if sprint_field:
             if isinstance(sprint_field, list):
                 for s in sprint_field:
-                    if s:
+                    if s and isinstance(s, dict):
                         sprint_set.add(s.get("name"))
-            else:
+            elif isinstance(sprint_field, dict):
                 sprint_set.add(sprint_field.get("name"))
 
-    # If no sprint found (e.g., no date selected), fetch all sprints
+    # Fallback if empty
     if not sprint_set:
+
         all_issues = client.search_issues(
             f'project = {project_key}',
             fields="key,sprint"
-        )
+        ) or []
 
         for issue in all_issues:
-            sprint_field = issue.get("fields", {}).get("sprint")
+
+            if not issue:
+                continue
+
+            fields = issue.get("fields") or {}
+            sprint_field = fields.get("sprint")
 
             if sprint_field:
                 if isinstance(sprint_field, list):
                     for s in sprint_field:
-                        if s:
+                        if s and isinstance(s, dict):
                             sprint_set.add(s.get("name"))
-                else:
+                elif isinstance(sprint_field, dict):
                     sprint_set.add(sprint_field.get("name"))
 
-    sprint_list = sorted(list(sprint_set))
+    sprint_list = sorted([s for s in sprint_set if s])
 
     selected_sprints = st.sidebar.multiselect(
         "Select Sprint(s)",
@@ -145,7 +156,10 @@ if "client" in st.session_state:
         issues = client.search_issues(
             final_jql,
             fields="key,assignee,status,issuetype,customfield_10003,sprint"
-        )
+        ) or []
+
+        # Remove None issues
+        issues = [i for i in issues if i]
 
         st.session_state["issues"] = issues
 
@@ -155,13 +169,23 @@ if "client" in st.session_state:
 
     if "issues" in st.session_state:
 
-        issues = st.session_state["issues"]
+        issues = st.session_state.get("issues") or []
+
+        # ---------------- ASSIGNEE FILTER ----------------
 
         assignees = set()
+
         for issue in issues:
-            assignee = issue.get("fields", {}).get("assignee")
-            if assignee:
-                assignees.add(assignee["displayName"])
+
+            if not issue:
+                continue
+
+            fields = issue.get("fields") or {}
+            assignee = fields.get("assignee") or {}
+
+            name = assignee.get("displayName")
+            if name:
+                assignees.add(name)
 
         assignee_list = ["All"] + sorted(list(assignees))
 
@@ -171,14 +195,13 @@ if "client" in st.session_state:
             default=["All"]
         )
 
-        # ================= METRICS =================
+        # ---------------- METRICS ----------------
 
         df_sp = calculate_story_points(issues, selected_users)
         df_work = calculate_worklog(client, issues, start_date, end_date, selected_users)
-
-        df_eff = calculate_efficiency(df_sp, df_work) if "calculate_efficiency" in globals() else pd.DataFrame()
-        df_velocity = calculate_velocity(issues) if "calculate_velocity" in globals() else pd.DataFrame()
-        team_score = calculate_team_score(df_sp, df_work) if "calculate_team_score" in globals() else 0
+        df_eff = calculate_efficiency(df_sp, df_work)
+        df_velocity = calculate_velocity(issues)
+        team_score = calculate_team_score(df_sp, df_work)
 
         sprint_data_mode = st.checkbox("SprintData")
 
@@ -207,22 +230,19 @@ if "client" in st.session_state:
                         use_container_width=True
                     )
 
-            if "commitment_snapshot" in globals():
-                fig_commit = commitment_snapshot(df_sp)
-                if fig_commit:
-                    st.plotly_chart(fig_commit, use_container_width=True)
+            fig_commit = commitment_snapshot(df_sp)
+            if fig_commit:
+                st.plotly_chart(fig_commit, use_container_width=True)
 
-            if not df_eff.empty and "efficiency_chart" in globals():
-                fig_eff = efficiency_chart(df_eff)
-                if fig_eff:
-                    st.plotly_chart(fig_eff, use_container_width=True)
+            fig_eff = efficiency_chart(df_eff)
+            if fig_eff:
+                st.plotly_chart(fig_eff, use_container_width=True)
 
-            if not df_eff.empty and "sp_vs_hours_chart" in globals():
-                fig_sp_hours = sp_vs_hours_chart(df_eff)
-                if fig_sp_hours:
-                    st.plotly_chart(fig_sp_hours, use_container_width=True)
+            fig_sp_hours = sp_vs_hours_chart(df_eff)
+            if fig_sp_hours:
+                st.plotly_chart(fig_sp_hours, use_container_width=True)
 
-            if sprint_data_mode and not df_velocity.empty and "velocity_chart" in globals():
+            if sprint_data_mode:
                 fig_vel = velocity_chart(df_velocity)
                 if fig_vel:
                     st.plotly_chart(fig_vel, use_container_width=True)
@@ -232,13 +252,14 @@ if "client" in st.session_state:
         # =====================================================
 
         with tab2:
+
             if not df_work.empty:
                 st.dataframe(df_work, use_container_width=True)
             else:
                 st.info("No Worklog Data Found")
 
         # =====================================================
-        # TAB 3 - GitLab Code Activity
+        # TAB 3 - GITLAB (SAFE)
         # =====================================================
 
         with tab3:
@@ -253,48 +274,69 @@ if "client" in st.session_state:
 
                 if not gitlab_token or not gitlab_project_id:
                     st.warning("Please provide GitLab Token and Project ID")
+
                 else:
-                    headers = {"PRIVATE-TOKEN": gitlab_token}
-                    url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
+                    try:
+                        headers = {"PRIVATE-TOKEN": gitlab_token}
+                        url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
 
-                    params = {"per_page": 100}
+                        params = {"per_page": 100}
 
-                    if start_date:
-                        params["since"] = start_date.isoformat()
-                    if end_date:
-                        params["until"] = end_date.isoformat()
+                        if start_date:
+                            params["since"] = start_date.isoformat()
+                        if end_date:
+                            params["until"] = end_date.isoformat()
 
-                    response = requests.get(url, headers=headers, params=params)
+                        response = requests.get(url, headers=headers, params=params)
 
-                    if response.status_code == 200:
-                        commits = response.json()
-                        if commits:
+                        if response.status_code == 200:
+                            try:
+                                commits = response.json()
+                            except:
+                                commits = []
+
+                            if not isinstance(commits, list):
+                                commits = []
+
                             df_git = pd.DataFrame(commits)
+
+                            if not df_git.empty and "author_name" not in df_git.columns:
+                                df_git["author_name"] = "Unknown"
+
                             st.session_state["gitlab_commits"] = df_git
+
                         else:
-                            st.warning("No commits found.")
-                    else:
-                        st.error(response.text)
+                            st.error(response.text)
+                            st.session_state["gitlab_commits"] = pd.DataFrame()
 
-            if "gitlab_commits" in st.session_state:
+                    except Exception as e:
+                        st.error(f"GitLab API Error: {e}")
+                        st.session_state["gitlab_commits"] = pd.DataFrame()
 
-                df_git = st.session_state["gitlab_commits"]
+            df_git = st.session_state.get("gitlab_commits")
 
-                author_df = df_git.groupby("author_name") \
-                    .size().reset_index(name="commit_count")
+            if isinstance(df_git, pd.DataFrame) and not df_git.empty:
 
-                st.dataframe(author_df, use_container_width=True)
+                if "author_name" in df_git.columns:
 
-                if "gitlab_commit_bar" in globals():
+                    author_df = (
+                        df_git.groupby("author_name")
+                        .size()
+                        .reset_index(name="commit_count")
+                    )
+
+                    st.dataframe(author_df, use_container_width=True)
+
                     fig_bar = gitlab_commit_bar(author_df)
                     if fig_bar:
                         st.plotly_chart(fig_bar, use_container_width=True)
 
         # =====================================================
-        # EXPORT (DATA ONLY)
+        # EXPORT
         # =====================================================
 
         def export_excel():
+
             output = BytesIO()
 
             with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
