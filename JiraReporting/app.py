@@ -1,20 +1,13 @@
 import streamlit as st
-import pandas as pd
-import requests
-from io import BytesIO
-
 from jira_client import JiraClient
-from metrics import *
+from metrics import calculate_story_points, calculate_worklog
 from charts import *
 
-STORY_POINT_FIELD = "customfield_10003"
-SPRINT_FIELD = "customfield_11701"
-
-st.set_page_config(layout="wide")
-st.title("📊 Enterprise Agile + DevOps Dashboard")
+st.set_page_config(page_title="Jira Resource Dashboard", layout="wide")
+st.title("📊 Jira Resource Performance Dashboard")
 
 # =====================================================
-# JIRA CONNECTION
+# Sidebar - Jira Configuration
 # =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
@@ -24,7 +17,13 @@ username = st.sidebar.text_input("Username")
 password = st.sidebar.text_input("Password", type="password")
 verify_ssl = st.sidebar.checkbox("Verify SSL", value=True)
 
-if st.sidebar.button("Connect"):
+connect = st.sidebar.button("Connect")
+
+# =====================================================
+# Connect to Jira
+# =====================================================
+
+if connect:
     try:
         client = JiraClient(base_url, username, password, verify_ssl)
         client.test_connection()
@@ -34,7 +33,7 @@ if st.sidebar.button("Connect"):
         st.error(str(e))
 
 # =====================================================
-# MAIN DASHBOARD
+# Dashboard
 # =====================================================
 
 if "client" in st.session_state:
@@ -44,6 +43,10 @@ if "client" in st.session_state:
     # ---------------- Project ----------------
 
     projects_df = client.get_projects()
+
+    if projects_df.empty:
+        st.warning("No Projects Found")
+        st.stop()
 
     default_project = "ANKPRJ"
 
@@ -58,192 +61,159 @@ if "client" in st.session_state:
         index=default_index
     )
 
-    # ---------------- Date Filters ----------------
+    # ---------------- Scrum Board ----------------
 
-    start_date = st.sidebar.date_input("Start Date")
-    end_date = st.sidebar.date_input("End Date")
+    boards_df = client.get_boards(project_key)
 
-    # =====================================================
-    # STEP 1 - POPULATE SPRINT LIST (ALWAYS ENABLED)
-    # =====================================================
+    if boards_df.empty:
+        st.warning("No Scrum Boards Found for selected project.")
+        st.stop()
 
-    sprint_population_jql = f'project = {project_key}'
-
-    issues_for_population = client.search_issues(
-        sprint_population_jql,
-        fields=f"{SPRINT_FIELD}"
+    board_name = st.sidebar.selectbox(
+        "Select Scrum Board",
+        boards_df["name"]
     )
 
-    sprint_set = set()
+    board_id = boards_df[boards_df["name"] == board_name].iloc[0]["id"]
 
-    for issue in issues_for_population or []:
-        fields = issue.get("fields") or {}
-        sprint_data = fields.get(SPRINT_FIELD)
+    # ---------------- Sprint ----------------
 
-        if isinstance(sprint_data, list):
-            for s in sprint_data:
-                if isinstance(s, dict) and s.get("name"):
-                    sprint_set.add(s.get("name"))
+    sprints_df = client.get_sprints(board_id)
 
-        elif isinstance(sprint_data, dict):
-            if sprint_data.get("name"):
-                sprint_set.add(sprint_data.get("name"))
-
-    sprint_list = sorted(list(sprint_set))
+    sprint_list = []
+    if not sprints_df.empty:
+        sprint_list = sprints_df["name"].tolist()
 
     selected_sprints = st.sidebar.multiselect(
         "Select Sprint(s)",
         sprint_list
     )
 
-    # =====================================================
-    # APPLY FILTER
-    # =====================================================
+    # ---------------- Date Filters ----------------
 
-    if st.sidebar.button("Apply Filter"):
+    start_date = st.sidebar.date_input("Start Date", value=None)
+    end_date = st.sidebar.date_input("End Date", value=None)
 
-        final_jql = f'project = {project_key}'
+    # ---------------- Apply Filter ----------------
 
+    apply_filter = st.sidebar.button("Apply Filter")
+
+    if apply_filter:
+
+        jql = f'project = {project_key}'
+
+        # Start Date → YYYY-MM-DD
         if start_date:
-            final_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
+            start_str = start_date.strftime("%Y-%m-%d")
+            jql += f' AND created >= "{start_str}"'
 
+        # End Date → YYYYMMDD inside endOfDay()
         if end_date:
-            final_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
+            end_str = end_date.strftime("%Y%m%d")
+            jql += f' AND updated < endOfDay("{end_str}")'
 
+        # Sprint Filter
         if selected_sprints:
             sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
-            final_jql += f' AND sprint in ({sprint_clause})'
+            jql += f' AND sprint in ({sprint_clause})'
 
+        # Show applied filters
         st.sidebar.markdown("### 🔎 Applied Filters")
-        st.sidebar.code(final_jql)
+        st.sidebar.code(jql)
 
         issues = client.search_issues(
-            final_jql,
-            fields=f"key,assignee,status,issuetype,{STORY_POINT_FIELD},{SPRINT_FIELD}"
+            jql,
+            fields="key,assignee,status,issuetype,customfield_10003"
         )
 
-        st.session_state["issues"] = issues
+        st.session_state["filtered_issues"] = issues
 
     # =====================================================
-    # PROCESS DATA
+    # Process Filtered Issues
     # =====================================================
 
-    if "issues" in st.session_state:
+    if "filtered_issues" in st.session_state:
 
-        issues = st.session_state["issues"]
+        issues = st.session_state["filtered_issues"]
 
-        df_sp = calculate_story_points(issues)
-        df_work = calculate_worklog(client, issues, start_date, end_date)
-        df_eff = calculate_efficiency(df_sp, df_work)
-        df_velocity = calculate_velocity(issues)
-        team_score = calculate_team_score(df_sp, df_work)
+        # ---------------- Assignee ----------------
 
-        tab1, tab2, tab3 = st.tabs([
-            "📊 Sprint Summary",
-            "⏱ Worklog",
-            "💻 GitLab"
-        ])
+        assignees = set()
 
-        # =====================================================
-        # TAB 1 - Sprint Summary
-        # =====================================================
+        for issue in issues:
+            assignee = issue.get("fields", {}).get("assignee")
+            if assignee:
+                assignees.add(assignee["displayName"])
+
+        assignee_list = ["All"] + sorted(list(assignees))
+
+        selected_users = st.sidebar.multiselect(
+            "Filter by Assignee",
+            assignee_list,
+            default=["All"]
+        )
+
+        # ---------------- Tabs ----------------
+
+        tab1, tab2 = st.tabs(["📊 Sprint Summary", "⏱ Worklog"])
+
+        # ---------------- Sprint Summary ----------------
 
         with tab1:
 
-            st.metric("Team Efficiency Score", team_score)
+            df_sp = calculate_story_points(issues, selected_users)
 
             if not df_sp.empty:
-                st.subheader("Sprint Summary Table")
-                st.dataframe(df_sp)
 
-                st.subheader("Over/Under Commitment Indicator")
-                st.dataframe(
-                    df_sp[["user", "completion_%", "commitment_health"]]
+                st.dataframe(df_sp, use_container_width=True)
+
+                st.plotly_chart(
+                    bar_assigned_vs_completed(df_sp),
+                    use_container_width=True
                 )
 
-            fig_commit = commitment_snapshot(df_sp)
-            if fig_commit:
-                st.plotly_chart(fig_commit)
+                st.plotly_chart(
+                    stacked_spillover(df_sp),
+                    use_container_width=True
+                )
 
-            fig_eff = efficiency_chart(df_eff)
-            if fig_eff:
-                st.plotly_chart(fig_eff)
+                st.plotly_chart(
+                    pie_sp_distribution(df_sp),
+                    use_container_width=True
+                )
 
-            fig_sp_hours = sp_vs_hours_chart(df_eff)
-            if fig_sp_hours:
-                st.plotly_chart(fig_sp_hours)
+                st.download_button(
+                    "Download Sprint Summary CSV",
+                    df_sp.to_csv(index=False),
+                    "sprint_summary.csv",
+                    "text/csv"
+                )
 
-            fig_vel = velocity_chart(df_velocity)
-            if fig_vel:
-                st.plotly_chart(fig_vel)
+            else:
+                st.info("No Sprint Summary Data Found")
 
-        # =====================================================
-        # TAB 2 - WORKLOG
-        # =====================================================
+        # ---------------- Worklog ----------------
 
         with tab2:
-            st.dataframe(df_work)
 
-        # =====================================================
-        # TAB 3 - GITLAB
-        # =====================================================
+            df_work = calculate_worklog(
+                client,
+                issues,
+                start_date,
+                end_date,
+                selected_users
+            )
 
-        with tab3:
+            if not df_work.empty:
 
-            st.subheader("GitLab Code Check-ins")
+                st.dataframe(df_work, use_container_width=True)
 
-            gitlab_url = st.text_input("GitLab Base URL")
-            gitlab_token = st.text_input("GitLab Token", type="password")
-            gitlab_project_id = st.text_input("GitLab Project ID")
+                st.download_button(
+                    "Download Worklog CSV",
+                    df_work.to_csv(index=False),
+                    "worklog.csv",
+                    "text/csv"
+                )
 
-            if st.button("Fetch Commits"):
-
-                headers = {"PRIVATE-TOKEN": gitlab_token}
-                url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
-
-                response = requests.get(url, headers=headers)
-
-                if response.status_code == 200:
-                    commits = response.json()
-                    if commits:
-                        st.session_state["gitlab"] = pd.DataFrame(commits)
-                    else:
-                        st.warning("No commits found.")
-                else:
-                    st.error(response.text)
-
-            if "gitlab" in st.session_state:
-
-                df_git = st.session_state["gitlab"]
-
-                author_df = df_git.groupby("author_name") \
-                    .size().reset_index(name="commit_count")
-
-                st.dataframe(author_df)
-
-                fig_bar = gitlab_commit_bar(author_df)
-                if fig_bar:
-                    st.plotly_chart(fig_bar)
-
-        # =====================================================
-        # EXPORT
-        # =====================================================
-
-        def export_excel():
-
-            output = BytesIO()
-
-            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                df_sp.to_excel(writer, sheet_name="Sprint Summary", index=False)
-                df_work.to_excel(writer, sheet_name="Worklog", index=False)
-                df_eff.to_excel(writer, sheet_name="Efficiency", index=False)
-                df_velocity.to_excel(writer, sheet_name="Velocity", index=False)
-
-            output.seek(0)
-            return output
-
-        st.download_button(
-            "Download Agile Report",
-            export_excel(),
-            "agile_dashboard.xlsx"
-        )
+            else:
+                st.info("No Worklog Data Found")
