@@ -7,8 +7,15 @@ from jira_client import JiraClient
 from metrics import *
 from charts import *
 
+STORY_POINT_FIELD = "customfield_10003"
+SPRINT_FIELD = "customfield_11701"
+
 st.set_page_config(layout="wide")
 st.title("📊 Enterprise Agile + DevOps Dashboard")
+
+# =====================================================
+# JIRA CONNECTION
+# =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
 
@@ -26,13 +33,20 @@ if st.sidebar.button("Connect"):
     except Exception as e:
         st.error(str(e))
 
+# =====================================================
+# MAIN DASHBOARD
+# =====================================================
+
 if "client" in st.session_state:
 
     client = st.session_state["client"]
 
+    # ---------------- Project ----------------
+
     projects_df = client.get_projects()
 
     default_project = "ANKPRJ"
+
     if default_project in projects_df["key"].values:
         default_index = projects_df["key"].tolist().index(default_project)
     else:
@@ -44,32 +58,36 @@ if "client" in st.session_state:
         index=default_index
     )
 
+    # ---------------- Date Filters ----------------
+
     start_date = st.sidebar.date_input("Start Date")
     end_date = st.sidebar.date_input("End Date")
 
-    base_jql = f'project = {project_key}'
+    # =====================================================
+    # STEP 1 - POPULATE SPRINT LIST (ALWAYS ENABLED)
+    # =====================================================
 
-    if start_date:
-        base_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
-
-    if end_date:
-        base_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
+    sprint_population_jql = f'project = {project_key}'
 
     issues_for_population = client.search_issues(
-        base_jql,
-        fields="customfield_10007"
+        sprint_population_jql,
+        fields=f"{SPRINT_FIELD}"
     )
 
     sprint_set = set()
 
     for issue in issues_for_population or []:
         fields = issue.get("fields") or {}
-        sprint_field = fields.get("customfield_10007")
+        sprint_data = fields.get(SPRINT_FIELD)
 
-        if isinstance(sprint_field, list):
-            for s in sprint_field:
+        if isinstance(sprint_data, list):
+            for s in sprint_data:
                 if isinstance(s, dict) and s.get("name"):
                     sprint_set.add(s.get("name"))
+
+        elif isinstance(sprint_data, dict):
+            if sprint_data.get("name"):
+                sprint_set.add(sprint_data.get("name"))
 
     sprint_list = sorted(list(sprint_set))
 
@@ -78,20 +96,37 @@ if "client" in st.session_state:
         sprint_list
     )
 
+    # =====================================================
+    # APPLY FILTER
+    # =====================================================
+
     if st.sidebar.button("Apply Filter"):
 
-        final_jql = base_jql
+        final_jql = f'project = {project_key}'
+
+        if start_date:
+            final_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
+
+        if end_date:
+            final_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
 
         if selected_sprints:
             sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
             final_jql += f' AND sprint in ({sprint_clause})'
 
+        st.sidebar.markdown("### 🔎 Applied Filters")
+        st.sidebar.code(final_jql)
+
         issues = client.search_issues(
             final_jql,
-            fields="key,assignee,status,issuetype,customfield_10003,customfield_10007"
+            fields=f"key,assignee,status,issuetype,{STORY_POINT_FIELD},{SPRINT_FIELD}"
         )
 
         st.session_state["issues"] = issues
+
+    # =====================================================
+    # PROCESS DATA
+    # =====================================================
 
     if "issues" in st.session_state:
 
@@ -101,25 +136,114 @@ if "client" in st.session_state:
         df_work = calculate_worklog(client, issues, start_date, end_date)
         df_eff = calculate_efficiency(df_sp, df_work)
         df_velocity = calculate_velocity(issues)
+        team_score = calculate_team_score(df_sp, df_work)
 
-        tab1, tab2 = st.tabs(["Sprint Summary", "Worklog"])
+        tab1, tab2, tab3 = st.tabs([
+            "📊 Sprint Summary",
+            "⏱ Worklog",
+            "💻 GitLab"
+        ])
+
+        # =====================================================
+        # TAB 1 - Sprint Summary
+        # =====================================================
 
         with tab1:
-            st.dataframe(df_sp)
+
+            st.metric("Team Efficiency Score", team_score)
+
+            if not df_sp.empty:
+                st.subheader("Sprint Summary Table")
+                st.dataframe(df_sp)
+
+                st.subheader("Over/Under Commitment Indicator")
+                st.dataframe(
+                    df_sp[["user", "completion_%", "commitment_health"]]
+                )
+
+            fig_commit = commitment_snapshot(df_sp)
+            if fig_commit:
+                st.plotly_chart(fig_commit)
+
+            fig_eff = efficiency_chart(df_eff)
+            if fig_eff:
+                st.plotly_chart(fig_eff)
+
+            fig_sp_hours = sp_vs_hours_chart(df_eff)
+            if fig_sp_hours:
+                st.plotly_chart(fig_sp_hours)
+
+            fig_vel = velocity_chart(df_velocity)
+            if fig_vel:
+                st.plotly_chart(fig_vel)
+
+        # =====================================================
+        # TAB 2 - WORKLOG
+        # =====================================================
 
         with tab2:
             st.dataframe(df_work)
 
+        # =====================================================
+        # TAB 3 - GITLAB
+        # =====================================================
+
+        with tab3:
+
+            st.subheader("GitLab Code Check-ins")
+
+            gitlab_url = st.text_input("GitLab Base URL")
+            gitlab_token = st.text_input("GitLab Token", type="password")
+            gitlab_project_id = st.text_input("GitLab Project ID")
+
+            if st.button("Fetch Commits"):
+
+                headers = {"PRIVATE-TOKEN": gitlab_token}
+                url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
+
+                response = requests.get(url, headers=headers)
+
+                if response.status_code == 200:
+                    commits = response.json()
+                    if commits:
+                        st.session_state["gitlab"] = pd.DataFrame(commits)
+                    else:
+                        st.warning("No commits found.")
+                else:
+                    st.error(response.text)
+
+            if "gitlab" in st.session_state:
+
+                df_git = st.session_state["gitlab"]
+
+                author_df = df_git.groupby("author_name") \
+                    .size().reset_index(name="commit_count")
+
+                st.dataframe(author_df)
+
+                fig_bar = gitlab_commit_bar(author_df)
+                if fig_bar:
+                    st.plotly_chart(fig_bar)
+
+        # =====================================================
+        # EXPORT
+        # =====================================================
+
         def export_excel():
+
             output = BytesIO()
+
             with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
                 df_sp.to_excel(writer, sheet_name="Sprint Summary", index=False)
                 df_work.to_excel(writer, sheet_name="Worklog", index=False)
+                df_eff.to_excel(writer, sheet_name="Efficiency", index=False)
+                df_velocity.to_excel(writer, sheet_name="Velocity", index=False)
+
             output.seek(0)
             return output
 
         st.download_button(
-            "Download Report",
+            "Download Agile Report",
             export_excel(),
             "agile_dashboard.xlsx"
         )
