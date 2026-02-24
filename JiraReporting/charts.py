@@ -43,6 +43,19 @@ def velocity_chart(df):
     )
 
 
+def sp_vs_hours_chart(df):
+    if df.empty:
+        return None
+
+    return px.bar(
+        df,
+        x="user",
+        y=["completed_sp", "hours"],
+        barmode="group",
+        title="SP vs Logged Hours"
+    )
+
+
 # =====================================================
 # GitLab Charts
 # =====================================================
