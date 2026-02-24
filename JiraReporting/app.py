@@ -1,15 +1,17 @@
 import streamlit as st
-from io import BytesIO
 import pandas as pd
+import requests
+from io import BytesIO
+
 from jira_client import JiraClient
 from metrics import *
 from charts import *
 
 st.set_page_config(layout="wide")
-st.title("📊 Enterprise Agile Dashboard")
+st.title("📊 Enterprise Agile + DevOps Dashboard")
 
 # =====================================================
-# SIDEBAR CONFIG
+# SIDEBAR - JIRA CONFIG
 # =====================================================
 
 st.sidebar.header("🔧 Jira Configuration")
@@ -31,12 +33,14 @@ if connect:
         st.error(str(e))
 
 # =====================================================
-# DASHBOARD
+# MAIN DASHBOARD
 # =====================================================
 
 if "client" in st.session_state:
 
     client = st.session_state["client"]
+
+    # ---------------- Project ----------------
 
     projects_df = client.get_projects()
 
@@ -52,6 +56,8 @@ if "client" in st.session_state:
         projects_df["key"],
         index=default_index
     )
+
+    # ---------------- Date Filters ----------------
 
     start_date = st.sidebar.date_input("Start Date", value=None)
     end_date = st.sidebar.date_input("End Date", value=None)
@@ -83,6 +89,10 @@ if "client" in st.session_state:
 
         st.session_state["issues"] = issues
 
+    # =====================================================
+    # PROCESS DATA
+    # =====================================================
+
     if "issues" in st.session_state:
 
         issues = st.session_state["issues"]
@@ -101,6 +111,8 @@ if "client" in st.session_state:
             default=["All"]
         )
 
+        # ---------------- Metrics ----------------
+
         df_sp = calculate_story_points(issues, selected_users)
         df_work = calculate_worklog(client, issues, start_date, end_date, selected_users)
         df_eff = calculate_efficiency(df_sp, df_work)
@@ -109,19 +121,104 @@ if "client" in st.session_state:
 
         sprint_data_mode = st.checkbox("SprintData")
 
-        st.metric("Team Efficiency Score", team_score)
+        # ---------------- Tabs ----------------
 
-        if not df_sp.empty:
+        tab1, tab2, tab3 = st.tabs([
+            "📊 Sprint Summary",
+            "⏱ Worklog",
+            "💻 Code Activity"
+        ])
+
+        # =====================================================
+        # TAB 1 - Sprint Summary
+        # =====================================================
+
+        with tab1:
+
+            st.metric("Team Efficiency Score", team_score)
+
             fig_commit = commitment_snapshot(df_sp)
-            st.plotly_chart(fig_commit)
+            if fig_commit:
+                st.plotly_chart(fig_commit)
 
-        if not df_eff.empty:
             fig_eff = efficiency_chart(df_eff)
-            st.plotly_chart(fig_eff)
+            if fig_eff:
+                st.plotly_chart(fig_eff)
 
-        if sprint_data_mode and not df_velocity.empty:
-            fig_vel = velocity_chart(df_velocity)
-            st.plotly_chart(fig_vel)
+            if sprint_data_mode:
+                fig_vel = velocity_chart(df_velocity)
+                if fig_vel:
+                    st.plotly_chart(fig_vel)
+
+        # =====================================================
+        # TAB 2 - Worklog
+        # =====================================================
+
+        with tab2:
+            if not df_work.empty:
+                st.dataframe(df_work)
+
+        # =====================================================
+        # TAB 3 - GitLab Code Activity
+        # =====================================================
+
+        with tab3:
+
+            st.subheader("GitLab Code Check-ins")
+
+            gitlab_url = st.text_input("GitLab Base URL", value="https://gitlab.com")
+            gitlab_token = st.text_input("GitLab Private Token", type="password")
+            gitlab_project_id = st.text_input("GitLab Project ID")
+
+            if st.button("Fetch Commits"):
+
+                headers = {"PRIVATE-TOKEN": gitlab_token}
+
+                url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
+
+                params = {"per_page": 100}
+
+                if start_date:
+                    params["since"] = start_date.isoformat()
+
+                if end_date:
+                    params["until"] = end_date.isoformat()
+
+                response = requests.get(url, headers=headers, params=params)
+
+                if response.status_code == 200:
+
+                    commits = response.json()
+                    df_git = pd.DataFrame(commits)
+
+                    if not df_git.empty:
+
+                        author_df = df_git.groupby("author_name") \
+                            .size().reset_index(name="commit_count")
+
+                        st.dataframe(author_df)
+
+                        fig_bar = gitlab_commit_bar(author_df)
+                        if fig_bar:
+                            st.plotly_chart(fig_bar)
+
+                        df_git["date"] = pd.to_datetime(
+                            df_git["created_at"]
+                        ).dt.date
+
+                        date_df = df_git.groupby("date") \
+                            .size().reset_index(name="commit_count")
+
+                        fig_line = gitlab_commit_trend(date_df)
+                        if fig_line:
+                            st.plotly_chart(fig_line)
+
+                else:
+                    st.error(response.text)
+
+        # =====================================================
+        # EXPORT (DATA ONLY - NO KALEIDO)
+        # =====================================================
 
         def export_excel():
 
@@ -131,32 +228,16 @@ if "client" in st.session_state:
 
                 df_sp.to_excel(writer, sheet_name="Sprint Summary", index=False)
                 df_work.to_excel(writer, sheet_name="Worklog", index=False)
+                df_eff.to_excel(writer, sheet_name="Efficiency", index=False)
 
-                workbook = writer.book
-                worksheet = workbook.add_worksheet("Charts")
-
-                charts = []
-
-                if not df_sp.empty:
-                    charts.append(fig_commit)
-
-                if not df_eff.empty:
-                    charts.append(fig_eff)
-
-                if sprint_data_mode and not df_velocity.empty:
-                    charts.append(fig_vel)
-
-                row = 1
-                for fig in charts:
-                    img = fig.to_image(format="png")
-                    worksheet.insert_image(row, 1, "", {"image_data": BytesIO(img)})
-                    row += 25
+                if not df_velocity.empty:
+                    df_velocity.to_excel(writer, sheet_name="Velocity", index=False)
 
             output.seek(0)
             return output
 
         st.download_button(
-            "Download Full Agile Report",
+            "Download Agile Report (Data Only)",
             export_excel(),
             "agile_dashboard.xlsx"
         )
