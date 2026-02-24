@@ -15,14 +15,24 @@ COMPLETION_STATUSES = [
 ]
 
 # =====================================================
-# STORY POINT CALCULATION
+# STORY POINTS
 # =====================================================
 
 def calculate_story_points(issues, selected_users=None):
 
+    columns = [
+        "user",
+        "assigned_sp",
+        "completed_sp",
+        "spillover_sp",
+        "completion_%",
+        "commitment_health"
+    ]
+
     records = []
 
     for issue in issues:
+
         fields = issue.get("fields", {})
         issue_type = fields.get("issuetype", {}).get("name", "")
 
@@ -45,9 +55,10 @@ def calculate_story_points(issues, selected_users=None):
             "status": status
         })
 
+    if not records:
+        return pd.DataFrame(columns=columns)
+
     df = pd.DataFrame(records)
-    if df.empty:
-        return df
 
     assigned = df.groupby("user", as_index=False)["sp"].sum()
     assigned.rename(columns={"sp": "assigned_sp"}, inplace=True)
@@ -67,12 +78,12 @@ def calculate_story_points(issues, selected_users=None):
     ) * 100
 
     result["commitment_health"] = result["completion_%"].apply(
-        lambda x: "Over" if x > 100 else
-                  "Under" if x < 80 else
-                  "Healthy"
+        lambda x: "Over" if x > 100
+        else "Under" if x < 80
+        else "Healthy"
     )
 
-    return result
+    return result[columns]
 
 
 # =====================================================
@@ -81,9 +92,11 @@ def calculate_story_points(issues, selected_users=None):
 
 def calculate_worklog(client, issues, start_date=None, end_date=None, selected_users=None):
 
+    columns = ["user", "hours"]
     records = []
 
     for issue in issues:
+
         fields = issue.get("fields", {})
         issue_type = fields.get("issuetype", {}).get("name", "")
 
@@ -93,6 +106,7 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
         worklogs = client.get_worklogs(issue["key"])
 
         for wl in worklogs:
+
             author = wl.get("author", {}).get("displayName")
             if not author:
                 continue
@@ -117,10 +131,10 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
                 "hours": hours
             })
 
-    df = pd.DataFrame(records)
-    if df.empty:
-        return df
+    if not records:
+        return pd.DataFrame(columns=columns)
 
+    df = pd.DataFrame(records)
     return df.groupby("user", as_index=False).sum()
 
 
@@ -129,6 +143,9 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
 # =====================================================
 
 def calculate_efficiency(df_sp, df_work):
+
+    if df_sp.empty:
+        return pd.DataFrame(columns=["user", "efficiency"])
 
     df = df_sp.merge(df_work, on="user", how="left")
     df["hours"] = df["hours"].fillna(0)
@@ -143,7 +160,7 @@ def calculate_efficiency(df_sp, df_work):
 
 
 # =====================================================
-# VELOCITY (SPRINT-WISE)
+# VELOCITY
 # =====================================================
 
 def calculate_velocity(issues):
@@ -151,6 +168,7 @@ def calculate_velocity(issues):
     records = []
 
     for issue in issues:
+
         fields = issue.get("fields", {})
         sprint = fields.get("sprint")
         status = fields.get("status", {}).get("name", "")
@@ -166,10 +184,10 @@ def calculate_velocity(issues):
             for s in sprint_names:
                 records.append({"sprint": s, "completed_sp": sp})
 
-    df = pd.DataFrame(records)
-    if df.empty:
-        return df
+    if not records:
+        return pd.DataFrame(columns=["sprint", "completed_sp"])
 
+    df = pd.DataFrame(records)
     return df.groupby("sprint", as_index=False).sum()
 
 
@@ -179,9 +197,12 @@ def calculate_velocity(issues):
 
 def calculate_team_score(df_sp, df_work):
 
+    if df_sp.empty or df_work.empty:
+        return 0
+
     total_completed = df_sp["completed_sp"].sum()
     total_assigned = df_sp["assigned_sp"].sum()
-    total_hours = df_work["hours"].sum() if not df_work.empty else 0
+    total_hours = df_work["hours"].sum()
 
     if total_assigned == 0 or total_hours == 0:
         return 0
