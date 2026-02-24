@@ -6,7 +6,7 @@ from metrics import *
 from charts import *
 
 st.set_page_config(layout="wide")
-st.title("📊 Enterprise Agile Dashboard v2")
+st.title("📊 Enterprise Agile Dashboard")
 
 # =====================================================
 # SIDEBAR CONFIG
@@ -38,25 +38,27 @@ if "client" in st.session_state:
 
     client = st.session_state["client"]
 
-    # ---------------- Project ----------------
-
     projects_df = client.get_projects()
-    project_key = st.sidebar.selectbox("Select Project", projects_df["key"])
 
-    # ---------------- Date Filter ----------------
+    default_project = "ANKPRJ"
+
+    if default_project in projects_df["key"].values:
+        default_index = projects_df["key"].tolist().index(default_project)
+    else:
+        default_index = 0
+
+    project_key = st.sidebar.selectbox(
+        "Select Project",
+        projects_df["key"],
+        index=default_index
+    )
 
     start_date = st.sidebar.date_input("Start Date", value=None)
     end_date = st.sidebar.date_input("End Date", value=None)
 
-    # ---------------- Sprint ----------------
-
-    sprint_name = st.sidebar.text_input("Sprint Name (Optional)")
+    sprint_name = st.sidebar.text_input("Sprint (Optional)")
 
     apply_filter = st.sidebar.button("Apply Filter")
-
-    # =====================================================
-    # APPLY FILTER
-    # =====================================================
 
     if apply_filter:
 
@@ -81,15 +83,10 @@ if "client" in st.session_state:
 
         st.session_state["issues"] = issues
 
-    # =====================================================
-    # PROCESS DATA
-    # =====================================================
-
     if "issues" in st.session_state:
 
         issues = st.session_state["issues"]
 
-        # Assignee filter
         assignees = set()
         for issue in issues:
             assignee = issue.get("fields", {}).get("assignee")
@@ -104,38 +101,27 @@ if "client" in st.session_state:
             default=["All"]
         )
 
-        # =====================================================
-        # METRICS
-        # =====================================================
-
         df_sp = calculate_story_points(issues, selected_users)
         df_work = calculate_worklog(client, issues, start_date, end_date, selected_users)
         df_eff = calculate_efficiency(df_sp, df_work)
+        df_velocity = calculate_velocity(issues)
         team_score = calculate_team_score(df_sp, df_work)
 
         sprint_data_mode = st.checkbox("SprintData")
 
-        # =====================================================
-        # DISPLAY
-        # =====================================================
-
         st.metric("Team Efficiency Score", team_score)
 
-        fig_eff = efficiency_chart(df_eff)
-        fig_commit = commitment_snapshot(df_sp)
+        if not df_sp.empty:
+            fig_commit = commitment_snapshot(df_sp)
+            st.plotly_chart(fig_commit)
 
-        st.plotly_chart(fig_eff)
-        st.plotly_chart(fig_commit)
+        if not df_eff.empty:
+            fig_eff = efficiency_chart(df_eff)
+            st.plotly_chart(fig_eff)
 
-        if sprint_data_mode:
-            df_velocity = calculate_velocity(issues)
-            if not df_velocity.empty:
-                fig_vel = velocity_chart(df_velocity)
-                st.plotly_chart(fig_vel)
-
-        # =====================================================
-        # EXPORT EXCEL
-        # =====================================================
+        if sprint_data_mode and not df_velocity.empty:
+            fig_vel = velocity_chart(df_velocity)
+            st.plotly_chart(fig_vel)
 
         def export_excel():
 
@@ -149,7 +135,13 @@ if "client" in st.session_state:
                 workbook = writer.book
                 worksheet = workbook.add_worksheet("Charts")
 
-                charts = [fig_eff, fig_commit]
+                charts = []
+
+                if not df_sp.empty:
+                    charts.append(fig_commit)
+
+                if not df_eff.empty:
+                    charts.append(fig_eff)
 
                 if sprint_data_mode and not df_velocity.empty:
                     charts.append(fig_vel)
