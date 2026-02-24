@@ -40,7 +40,9 @@ if "client" in st.session_state:
 
     client = st.session_state["client"]
 
-    # ---------------- Project ----------------
+    # =====================================================
+    # PROJECT
+    # =====================================================
 
     projects_df = client.get_projects()
 
@@ -57,46 +59,94 @@ if "client" in st.session_state:
         index=default_index
     )
 
-    # ---------------- Date Filters ----------------
+    # =====================================================
+    # DATE FILTER (OPTIONAL)
+    # =====================================================
 
     start_date = st.sidebar.date_input("Start Date", value=None)
     end_date = st.sidebar.date_input("End Date", value=None)
 
-    sprint_name = st.sidebar.text_input("Sprint (Optional)")
+    # =====================================================
+    # STEP 1: FETCH ISSUES FOR SPRINT POPULATION
+    # =====================================================
+
+    base_jql = f'project = {project_key}'
+
+    if start_date:
+        base_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
+
+    if end_date:
+        base_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
+
+    # If date selected → fetch date-filtered issues
+    if start_date or end_date:
+        issues_for_sprint_population = client.search_issues(
+            base_jql,
+            fields="key,assignee,status,issuetype,customfield_10003,sprint"
+        )
+    else:
+        issues_for_sprint_population = client.search_issues(
+            f'project = {project_key}',
+            fields="key,assignee,status,issuetype,customfield_10003,sprint"
+        )
+
+    # =====================================================
+    # SPRINT DROPDOWN (DYNAMIC)
+    # =====================================================
+
+    sprint_set = set()
+
+    for issue in issues_for_sprint_population:
+        sprint_field = issue.get("fields", {}).get("sprint")
+
+        if sprint_field:
+            if isinstance(sprint_field, list):
+                for s in sprint_field:
+                    if s:
+                        sprint_set.add(s.get("name"))
+            else:
+                sprint_set.add(sprint_field.get("name"))
+
+    sprint_list = sorted(list(sprint_set))
+
+    selected_sprints = st.sidebar.multiselect(
+        "Select Sprint(s)",
+        sprint_list
+    )
+
+    # =====================================================
+    # APPLY FILTER
+    # =====================================================
 
     apply_filter = st.sidebar.button("Apply Filter")
 
     if apply_filter:
 
-        jql = f'project = {project_key}'
+        final_jql = base_jql
 
-        if start_date:
-            jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
-
-        if end_date:
-            jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
-
-        if sprint_name:
-            jql += f' AND sprint = "{sprint_name}"'
+        if selected_sprints:
+            sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
+            final_jql += f' AND sprint in ({sprint_clause})'
 
         st.sidebar.markdown("### 🔎 Applied Filters")
-        st.sidebar.code(jql)
+        st.sidebar.code(final_jql)
 
         issues = client.search_issues(
-            jql,
+            final_jql,
             fields="key,assignee,status,issuetype,customfield_10003,sprint"
         )
 
         st.session_state["issues"] = issues
 
     # =====================================================
-    # PROCESS DATA
+    # PROCESS FILTERED ISSUES
     # =====================================================
 
     if "issues" in st.session_state:
 
         issues = st.session_state["issues"]
 
+        # Assignee filter
         assignees = set()
         for issue in issues:
             assignee = issue.get("fields", {}).get("assignee")
@@ -111,7 +161,9 @@ if "client" in st.session_state:
             default=["All"]
         )
 
-        # ---------------- Metrics ----------------
+        # =====================================================
+        # METRICS
+        # =====================================================
 
         df_sp = calculate_story_points(issues, selected_users)
         df_work = calculate_worklog(client, issues, start_date, end_date, selected_users)
@@ -121,7 +173,9 @@ if "client" in st.session_state:
 
         sprint_data_mode = st.checkbox("SprintData")
 
-        # ---------------- Tabs ----------------
+        # =====================================================
+        # TABS
+        # =====================================================
 
         tab1, tab2, tab3 = st.tabs([
             "📊 Sprint Summary",
@@ -129,9 +183,7 @@ if "client" in st.session_state:
             "💻 Code Activity"
         ])
 
-        # =====================================================
-        # TAB 1 - Sprint Summary
-        # =====================================================
+        # ---------------- Sprint Summary ----------------
 
         with tab1:
 
@@ -150,17 +202,13 @@ if "client" in st.session_state:
                 if fig_vel:
                     st.plotly_chart(fig_vel)
 
-        # =====================================================
-        # TAB 2 - Worklog
-        # =====================================================
+        # ---------------- Worklog ----------------
 
         with tab2:
             if not df_work.empty:
                 st.dataframe(df_work)
 
-        # =====================================================
-        # TAB 3 - GitLab Code Activity
-        # =====================================================
+        # ---------------- GitLab ----------------
 
         with tab3:
 
@@ -173,7 +221,6 @@ if "client" in st.session_state:
             if st.button("Fetch Commits"):
 
                 headers = {"PRIVATE-TOKEN": gitlab_token}
-
                 url = f"{gitlab_url}/api/v4/projects/{gitlab_project_id}/repository/commits"
 
                 params = {"per_page": 100}
@@ -189,32 +236,28 @@ if "client" in st.session_state:
                 if response.status_code == 200:
 
                     commits = response.json()
-                    df_git = pd.DataFrame(commits)
 
-                    if not df_git.empty:
+                    if commits:
 
-                        author_df = df_git.groupby("author_name") \
-                            .size().reset_index(name="commit_count")
-
-                        st.dataframe(author_df)
-
-                        fig_bar = gitlab_commit_bar(author_df)
-                        if fig_bar:
-                            st.plotly_chart(fig_bar)
-
-                        df_git["date"] = pd.to_datetime(
-                            df_git["created_at"]
-                        ).dt.date
-
-                        date_df = df_git.groupby("date") \
-                            .size().reset_index(name="commit_count")
-
-                        fig_line = gitlab_commit_trend(date_df)
-                        if fig_line:
-                            st.plotly_chart(fig_line)
-
+                        df_git = pd.DataFrame(commits)
+                        st.session_state["gitlab_commits"] = df_git
+                    else:
+                        st.warning("No commits found.")
                 else:
                     st.error(response.text)
+
+            if "gitlab_commits" in st.session_state:
+
+                df_git = st.session_state["gitlab_commits"]
+
+                author_df = df_git.groupby("author_name") \
+                    .size().reset_index(name="commit_count")
+
+                st.dataframe(author_df)
+
+                fig_bar = gitlab_commit_bar(author_df)
+                if fig_bar:
+                    st.plotly_chart(fig_bar)
 
         # =====================================================
         # EXPORT (DATA ONLY - NO KALEIDO)
