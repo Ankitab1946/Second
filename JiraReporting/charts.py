@@ -1,6 +1,27 @@
 import plotly.express as px
 
+
+# =====================================================
+# Sprint Charts
+# =====================================================
+
+def commitment_snapshot(df):
+    if df.empty:
+        return None
+
+    return px.bar(
+        df,
+        x="user",
+        y=["assigned_sp", "completed_sp"],
+        barmode="group",
+        title="Committed vs Completed Story Points"
+    )
+
+
 def efficiency_chart(df):
+    if df.empty:
+        return None
+
     return px.bar(
         df,
         x="user",
@@ -8,7 +29,11 @@ def efficiency_chart(df):
         title="SP vs Hours Efficiency"
     )
 
+
 def velocity_chart(df):
+    if df.empty:
+        return None
+
     return px.line(
         df,
         x="sprint",
@@ -17,11 +42,31 @@ def velocity_chart(df):
         title="Velocity Trend"
     )
 
-def commitment_snapshot(df):
+
+# =====================================================
+# GitLab Charts
+# =====================================================
+
+def gitlab_commit_bar(df):
+    if df.empty:
+        return None
+
     return px.bar(
         df,
-        x="user",
-        y=["assigned_sp", "completed_sp"],
-        barmode="group",
-        title="Committed vs Completed SP"
+        x="author_name",
+        y="commit_count",
+        title="Commits per Author"
+    )
+
+
+def gitlab_commit_trend(df):
+    if df.empty:
+        return None
+
+    return px.line(
+        df,
+        x="date",
+        y="commit_count",
+        markers=True,
+        title="Commit Trend"
     )
