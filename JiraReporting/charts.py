@@ -1,12 +1,8 @@
 import plotly.express as px
 
 
-# =====================================================
-# Sprint Charts
-# =====================================================
-
 def commitment_snapshot(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.bar(
@@ -19,7 +15,7 @@ def commitment_snapshot(df):
 
 
 def efficiency_chart(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.bar(
@@ -31,7 +27,7 @@ def efficiency_chart(df):
 
 
 def velocity_chart(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.line(
@@ -44,7 +40,7 @@ def velocity_chart(df):
 
 
 def sp_vs_hours_chart(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.bar(
@@ -56,12 +52,8 @@ def sp_vs_hours_chart(df):
     )
 
 
-# =====================================================
-# GitLab Charts
-# =====================================================
-
 def gitlab_commit_bar(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.bar(
@@ -73,7 +65,7 @@ def gitlab_commit_bar(df):
 
 
 def gitlab_commit_trend(df):
-    if df.empty:
+    if df is None or df.empty:
         return None
 
     return px.line(
