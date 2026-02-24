@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime
 
 STORY_POINT_FIELD = "customfield_10003"
+SPRINT_FIELD = "customfield_11701"
 
 VALID_ISSUE_TYPES = ["Story", "Task", "Bug", "Sub-task"]
 EXCLUDED_WORKLOG_TYPES = ["Xray Test"]
@@ -37,28 +38,17 @@ def calculate_story_points(issues, selected_users=None):
 
     for issue in issues:
 
-        if not issue:
-            continue
-
         fields = issue.get("fields") or {}
 
-        issuetype_obj = fields.get("issuetype") or {}
-        issue_type = issuetype_obj.get("name", "")
-
+        issue_type = (fields.get("issuetype") or {}).get("name", "")
         if issue_type not in VALID_ISSUE_TYPES:
             continue
 
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
-
-        status_obj = fields.get("status") or {}
-        status = status_obj.get("name", "")
+        status = (fields.get("status") or {}).get("name", "")
 
         assignee_obj = fields.get("assignee")
-        user = (
-            assignee_obj.get("displayName")
-            if isinstance(assignee_obj, dict)
-            else "Unassigned"
-        )
+        user = assignee_obj.get("displayName") if isinstance(assignee_obj, dict) else "Unassigned"
 
         if selected_users and "All" not in selected_users:
             if user not in selected_users:
@@ -127,7 +117,6 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
         for wl in worklogs or []:
 
             author = (wl.get("author") or {}).get("displayName")
-
             if not author:
                 continue
 
@@ -139,12 +128,7 @@ def calculate_worklog(client, issues, start_date=None, end_date=None, selected_u
 
             started = wl.get("started")
             if started:
-                try:
-                    wl_date = datetime.strptime(
-                        started[:10], "%Y-%m-%d"
-                    ).date()
-                except:
-                    continue
+                wl_date = datetime.strptime(started[:10], "%Y-%m-%d").date()
 
                 if start_date and wl_date < start_date:
                     continue
@@ -198,18 +182,18 @@ def calculate_velocity(issues):
     for issue in issues:
 
         fields = issue.get("fields") or {}
-        sprint_field = fields.get("customfield_10007")
+        sprint_data = fields.get(SPRINT_FIELD)
         status = (fields.get("status") or {}).get("name", "")
         sp = float(fields.get(STORY_POINT_FIELD, 0) or 0)
 
-        if not sprint_field:
+        if not sprint_data:
             continue
 
         if status not in COMPLETION_STATUSES:
             continue
 
-        if isinstance(sprint_field, list):
-            for s in sprint_field:
+        if isinstance(sprint_data, list):
+            for s in sprint_data:
                 if isinstance(s, dict) and s.get("name"):
                     records.append({
                         "sprint": s.get("name"),
@@ -221,3 +205,23 @@ def calculate_velocity(issues):
 
     df = pd.DataFrame(records)
     return df.groupby("sprint", as_index=False).sum()
+
+
+# =====================================================
+# TEAM SCORE
+# =====================================================
+
+def calculate_team_score(df_sp, df_work):
+
+    if df_sp.empty or df_work.empty:
+        return 0
+
+    total_completed = df_sp["completed_sp"].sum()
+    total_assigned = df_sp["assigned_sp"].sum()
+    total_hours = df_work["hours"].sum()
+
+    if total_assigned == 0 or total_hours == 0:
+        return 0
+
+    return round((total_completed / total_assigned) *
+                 (total_completed / total_hours), 2)
