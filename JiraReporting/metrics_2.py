@@ -32,10 +32,16 @@ COMPLETION_STATUSES = [
 
 def calculate_story_points(issues, selected_users=None):
 
+    if not issues:
+        return pd.DataFrame()
+
     assigned_records = []
     completed_records = []
 
     for issue in issues:
+
+        if not issue:
+            continue
 
         fields = issue.get("fields") or {}
 
@@ -86,9 +92,7 @@ def calculate_story_points(issues, selected_users=None):
     result = assigned.merge(completed, on="user", how="left")
     result["completed_sp"] = result["completed_sp"].fillna(0)
 
-    result["spillover_sp"] = (
-        result["assigned_sp"] - result["completed_sp"]
-    )
+    result["spillover_sp"] = result["assigned_sp"] - result["completed_sp"]
 
     result["completion_%"] = (
         result["completed_sp"] /
@@ -120,19 +124,33 @@ def calculate_worklog(client,
                       end_date=None,
                       selected_users=None):
 
+    if not issues:
+        return pd.DataFrame()
+
     records = []
 
     for issue in issues:
 
+        if not issue:
+            continue
+
         fields = issue.get("fields") or {}
+        issue_key = issue.get("key")
+
+        if not issue_key:
+            continue
+
         issue_type = (fields.get("issuetype") or {}).get("name", "")
 
         if issue_type in EXCLUDED_WORKLOG_TYPES:
             continue
 
-        worklogs = client.get_worklogs(issue.get("key"))
+        worklogs = client.get_worklogs(issue_key) or []
 
         for wl in worklogs:
+
+            if not wl:
+                continue
 
             author = (wl.get("author") or {}).get("displayName")
             if not author:
@@ -146,9 +164,12 @@ def calculate_worklog(client,
             started = wl.get("started")
 
             if started:
-                wl_date = datetime.strptime(
-                    started[:10], "%Y-%m-%d"
-                ).date()
+                try:
+                    wl_date = datetime.strptime(
+                        started[:10], "%Y-%m-%d"
+                    ).date()
+                except:
+                    continue
 
                 if start_date and wl_date < start_date:
                     continue
@@ -158,7 +179,7 @@ def calculate_worklog(client,
 
             records.append({
                 "user": author,
-                "issue_key": issue.get("key"),
+                "issue_key": issue_key,
                 "hours": hours
             })
 
@@ -196,14 +217,20 @@ def calculate_efficiency(df_sp, df_work):
 
 
 # =====================================================
-# VELOCITY CALCULATION (FIXED SAFE)
+# VELOCITY CALCULATION
 # =====================================================
 
 def calculate_velocity(issues):
 
+    if not issues:
+        return pd.DataFrame()
+
     records = []
 
     for issue in issues:
+
+        if not issue:
+            continue
 
         fields = issue.get("fields") or {}
         sprint = fields.get("sprint")
