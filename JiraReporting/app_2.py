@@ -41,7 +41,7 @@ if "client" in st.session_state:
     client = st.session_state["client"]
 
     # =====================================================
-    # PROJECT SELECTION
+    # PROJECT
     # =====================================================
 
     projects_df = client.get_projects()
@@ -64,77 +64,49 @@ if "client" in st.session_state:
     )
 
     # =====================================================
-    # DATE FILTER
+    # SCRUM BOARD (Stable Sprint Source)
     # =====================================================
 
-    start_date = st.sidebar.date_input("Start Date", value=None)
-    end_date = st.sidebar.date_input("End Date", value=None)
+    boards_df = client.get_boards(project_key)
+
+    if boards_df.empty:
+        st.warning("No Scrum Boards Found for selected project.")
+        st.stop()
+
+    board_name = st.sidebar.selectbox(
+        "Select Scrum Board",
+        boards_df["name"]
+    )
+
+    board_id = boards_df[boards_df["name"] == board_name].iloc[0]["id"]
 
     # =====================================================
-    # STEP 1 - POPULATE SPRINT LIST (SAFE)
+    # SPRINT LIST (Using Agile API - FIXED)
     # =====================================================
 
-    base_jql = f'project = {project_key}'
+    sprints_df = client.get_sprints(board_id)
 
-    if start_date:
-        base_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
-
-    if end_date:
-        base_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
-
-    issues_for_population = client.search_issues(
-        base_jql,
-        fields="key,sprint"
-    ) or []
-
-    sprint_set = set()
-
-    for issue in issues_for_population:
-
-        if not issue:
-            continue
-
-        fields = issue.get("fields") or {}
-        sprint_field = fields.get("sprint")
-
-        if sprint_field:
-            if isinstance(sprint_field, list):
-                for s in sprint_field:
-                    if s and isinstance(s, dict):
-                        sprint_set.add(s.get("name"))
-            elif isinstance(sprint_field, dict):
-                sprint_set.add(sprint_field.get("name"))
-
-    # Fallback if empty
-    if not sprint_set:
-
-        all_issues = client.search_issues(
-            f'project = {project_key}',
-            fields="key,sprint"
-        ) or []
-
-        for issue in all_issues:
-
-            if not issue:
-                continue
-
-            fields = issue.get("fields") or {}
-            sprint_field = fields.get("sprint")
-
-            if sprint_field:
-                if isinstance(sprint_field, list):
-                    for s in sprint_field:
-                        if s and isinstance(s, dict):
-                            sprint_set.add(s.get("name"))
-                elif isinstance(sprint_field, dict):
-                    sprint_set.add(sprint_field.get("name"))
-
-    sprint_list = sorted([s for s in sprint_set if s])
+    if sprints_df.empty:
+        sprint_list = []
+    else:
+        sprint_list = (
+            sprints_df["name"]
+            .dropna()
+            .astype(str)
+            .tolist()
+        )
 
     selected_sprints = st.sidebar.multiselect(
         "Select Sprint(s)",
         sprint_list
     )
+
+    # =====================================================
+    # DATE FILTER
+    # =====================================================
+
+    start_date = st.sidebar.date_input("Start Date", value=None)
+    end_date = st.sidebar.date_input("End Date", value=None)
 
     # =====================================================
     # APPLY FILTER
@@ -144,7 +116,13 @@ if "client" in st.session_state:
 
     if apply_filter:
 
-        final_jql = base_jql
+        final_jql = f'project = {project_key}'
+
+        if start_date:
+            final_jql += f' AND created >= "{start_date.strftime("%Y-%m-%d")}"'
+
+        if end_date:
+            final_jql += f' AND updated < endOfDay("{end_date.strftime("%Y%m%d")}")'
 
         if selected_sprints:
             sprint_clause = ",".join([f'"{s}"' for s in selected_sprints])
@@ -158,7 +136,7 @@ if "client" in st.session_state:
             fields="key,assignee,status,issuetype,customfield_10003,sprint"
         ) or []
 
-        # Remove None issues
+        # Remove None issues safely
         issues = [i for i in issues if i]
 
         st.session_state["issues"] = issues
@@ -176,13 +154,8 @@ if "client" in st.session_state:
         assignees = set()
 
         for issue in issues:
-
-            if not issue:
-                continue
-
             fields = issue.get("fields") or {}
             assignee = fields.get("assignee") or {}
-
             name = assignee.get("displayName")
             if name:
                 assignees.add(name)
@@ -230,36 +203,27 @@ if "client" in st.session_state:
                         use_container_width=True
                     )
 
-            fig_commit = commitment_snapshot(df_sp)
-            if fig_commit:
-                st.plotly_chart(fig_commit, use_container_width=True)
-
-            fig_eff = efficiency_chart(df_eff)
-            if fig_eff:
-                st.plotly_chart(fig_eff, use_container_width=True)
-
-            fig_sp_hours = sp_vs_hours_chart(df_eff)
-            if fig_sp_hours:
-                st.plotly_chart(fig_sp_hours, use_container_width=True)
-
-            if sprint_data_mode:
-                fig_vel = velocity_chart(df_velocity)
-                if fig_vel:
-                    st.plotly_chart(fig_vel, use_container_width=True)
+            for fig in [
+                commitment_snapshot(df_sp),
+                efficiency_chart(df_eff),
+                sp_vs_hours_chart(df_eff),
+                velocity_chart(df_velocity) if sprint_data_mode else None
+            ]:
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
 
         # =====================================================
         # TAB 2 - Worklog
         # =====================================================
 
         with tab2:
-
             if not df_work.empty:
                 st.dataframe(df_work, use_container_width=True)
             else:
                 st.info("No Worklog Data Found")
 
         # =====================================================
-        # TAB 3 - GITLAB (SAFE)
+        # TAB 3 - GITLAB
         # =====================================================
 
         with tab3:
@@ -290,11 +254,7 @@ if "client" in st.session_state:
                         response = requests.get(url, headers=headers, params=params)
 
                         if response.status_code == 200:
-                            try:
-                                commits = response.json()
-                            except:
-                                commits = []
-
+                            commits = response.json()
                             if not isinstance(commits, list):
                                 commits = []
 
@@ -304,7 +264,6 @@ if "client" in st.session_state:
                                 df_git["author_name"] = "Unknown"
 
                             st.session_state["gitlab_commits"] = df_git
-
                         else:
                             st.error(response.text)
                             st.session_state["gitlab_commits"] = pd.DataFrame()
@@ -316,20 +275,17 @@ if "client" in st.session_state:
             df_git = st.session_state.get("gitlab_commits")
 
             if isinstance(df_git, pd.DataFrame) and not df_git.empty:
+                author_df = (
+                    df_git.groupby("author_name")
+                    .size()
+                    .reset_index(name="commit_count")
+                )
 
-                if "author_name" in df_git.columns:
+                st.dataframe(author_df, use_container_width=True)
 
-                    author_df = (
-                        df_git.groupby("author_name")
-                        .size()
-                        .reset_index(name="commit_count")
-                    )
-
-                    st.dataframe(author_df, use_container_width=True)
-
-                    fig_bar = gitlab_commit_bar(author_df)
-                    if fig_bar:
-                        st.plotly_chart(fig_bar, use_container_width=True)
+                fig_bar = gitlab_commit_bar(author_df)
+                if fig_bar:
+                    st.plotly_chart(fig_bar, use_container_width=True)
 
         # =====================================================
         # EXPORT
